@@ -1,0 +1,251 @@
+---
+# GPU Worker Node Configuration (Jetson Nodes)
+
+# GPU-specific node labels
+node_labels:
+  - "node-role.kubernetes.io/worker=true"
+  - "node-type=gpu-worker"
+  - "nvidia.com/gpu=true"
+  - "gpu-type={{ gpu_type | default('nvidia') }}"
+  - "kubernetes.io/hostname={{ inventory_hostname }}"
+  - "jetson.nvidia.com/platform={{ jetson_platform | default('orin-nano') }}"
+
+# NVIDIA Container Runtime Configuration
+nvidia_runtime:
+  enabled: true
+  version: "latest"
+  
+  # NVIDIA Container Toolkit
+  container_toolkit:
+    repository: "https://nvidia.github.io/libnvidia-container"
+    package: "nvidia-container-toolkit"
+    
+  # Docker daemon configuration for NVIDIA runtime
+  docker_daemon_config:
+    runtimes:
+      nvidia:
+        path: "/usr/bin/nvidia-container-runtime"
+        runtimeArgs: []
+    default_runtime: "nvidia"
+    
+  # Environment variables for GPU access
+  gpu_env_vars:
+    NVIDIA_VISIBLE_DEVICES: "all"
+    NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+
+# Jetson-specific Configuration
+jetson:
+  # Performance mode settings
+  performance:
+    mode: "maxn"  # Maximum performance mode
+    power_mode: 0 # MAXN power mode
+    
+  # Jetson stats monitoring
+  jtop:
+    enabled: true
+    service_enabled: true
+    
+  # CUDA configuration
+  cuda:
+    version: "11.8"  # Adjust based on JetPack version
+    samples_enabled: false
+    
+  # JetPack components
+  jetpack:
+    version: "5.1.2"  # Adjust based on your JetPack version
+    components:
+      - "cuda-toolkit"
+      - "tensorrt"
+      - "opencv"
+      - "vpi"
+
+# GPU Resource Limits
+gpu_resources:
+  # GPU memory management
+  memory:
+    total: "8Gi"      # Total GPU memory
+    reserved: "1Gi"   # Reserved for system
+    available: "7Gi"  # Available for workloads
+    
+  # GPU compute allocation
+  compute:
+    cuda_cores: 1024  # Orin Nano CUDA cores
+    tensor_cores: 32  # Tensor cores
+    
+  # Power management
+  power:
+    max_power: "15W"  # Orin Nano max power
+    thermal_throttle: "85C"
+
+# AI/ML Workload Configuration
+ai_workloads:
+  # Ollama configuration for GPU
+  ollama:
+    gpu_enabled: true
+    gpu_memory_fraction: 0.8  # Use 80% of GPU memory
+    concurrent_requests: 2
+    model_cache_size: "4Gi"
+    
+    # Optimized environment variables
+    env_vars:
+      OLLAMA_HOST: "0.0.0.0"
+      OLLAMA_KEEP_ALIVE: "30m"
+      OLLAMA_NUM_PARALLEL: "2"
+      OLLAMA_MAX_LOADED_MODELS: "2"
+      CUDA_VISIBLE_DEVICES: "0"
+      
+  # Qdrant vector database (if deployed)
+  qdrant:
+    enabled: false  # Enable on jetson2
+    gpu_acceleration: true
+    collection_config:
+      vector_size: 384
+      distance: "Cosine"
+      
+# Performance Optimizations
+performance_optimizations:
+  # CPU settings
+  cpu:
+    governor: "performance"
+    scaling_min_freq: "1000000"  # 1GHz minimum
+    scaling_max_freq: "2000000"  # 2GHz maximum (adjust for your model)
+    
+  # Memory settings
+  memory:
+    swappiness: 1  # Minimize swap usage
+    dirty_ratio: 15
+    dirty_background_ratio: 5
+    
+  # GPU settings
+  gpu:
+    persistence_mode: true
+    power_limit: "15"  # Watts
+    memory_clock_offset: 0
+    graphics_clock_offset: 0
+
+# Monitoring Configuration for GPU Nodes
+gpu_monitoring:
+  # NVIDIA monitoring tools
+  nvidia_smi:
+    enabled: true
+    interval: 30  # seconds
+    
+  # Jetson stats
+  jetson_stats:
+    enabled: true
+    export_prometheus: true
+    port: 9100
+    
+  # Temperature monitoring
+  thermal_monitoring:
+    enabled: true
+    warning_threshold: 75  # Celsius
+    critical_threshold: 85 # Celsius
+    
+  # Power monitoring
+  power_monitoring:
+    enabled: true
+    warning_threshold: 12  # Watts
+    critical_threshold: 14 # Watts
+
+# Container Optimizations for GPU Workloads
+container_optimizations:
+  # Shared memory size for AI workloads
+  shm_size: "2g"
+  
+  # Security context for GPU access
+  security_context:
+    privileged: false
+    capabilities:
+      add:
+        - "SYS_ADMIN"  # For GPU access
+        
+  # Resource requests and limits
+  default_resources:
+    requests:
+      memory: "1Gi"
+      cpu: "500m"
+      nvidia.com/gpu: "1"
+    limits:
+      memory: "4Gi"
+      cpu: "2000m"
+      nvidia.com/gpu: "1"
+
+# Storage Configuration for GPU Nodes
+gpu_storage:
+  # Model storage optimization
+  model_storage:
+    path: "/opt/ollama-models"
+    filesystem: "ext4"
+    mount_options: "noatime,nodiratime"
+    
+  # Temporary storage for AI workloads
+  tmp_storage:
+    path: "/tmp/ai-workloads"
+    size: "10Gi"
+    cleanup_schedule: "0 3 * * *"  # Daily cleanup at 3 AM
+
+# Network Optimizations for GPU Nodes
+gpu_networking:
+  # High-performance networking
+  network_optimizations:
+    tcp_window_scaling: true
+    tcp_congestion_control: "bbr"
+    net_core_rmem_max: 134217728
+    net_core_wmem_max: 134217728
+    
+  # GPU-specific ports
+  gpu_ports:
+    - port: 11434
+      protocol: tcp
+      description: "Ollama API"
+    - port: 6333
+      protocol: tcp
+      description: "Qdrant API"
+    - port: 6334
+      protocol: tcp
+      description: "Qdrant gRPC"
+
+# Backup Configuration for GPU Nodes
+gpu_backup:
+  # Model backup strategy
+  models:
+    enabled: true
+    schedule: "0 1 * * 0"  # Weekly on Sunday at 1 AM
+    retention: 2
+    compression: true
+    
+  # GPU configuration backup
+  gpu_config:
+    enabled: true
+    schedule: "0 0 * * 0"  # Weekly on Sunday
+    include:
+      - "/etc/nvidia"
+      - "/usr/local/cuda"
+      - "/opt/nvidia"
+
+# Health Checks for GPU Nodes
+gpu_health_checks:
+  - name: "NVIDIA Driver"
+    command: "nvidia-smi"
+    expected_return_code: 0
+    timeout: 10
+    
+  - name: "CUDA Runtime"
+    command: "nvidia-smi --query-gpu=driver_version --format=csv,noheader"
+    expected_pattern: "^[0-9]+\\.[0-9]+$"
+    timeout: 5
+    
+  - name: "GPU Temperature"
+    command: "nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits"
+    max_value: 80  # Celsius
+    timeout: 5
+    
+  - name: "GPU Memory"
+    command: "nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits"
+    timeout: 5
+    
+  - name: "Jetson Stats"
+    command: "jtop --health"
+    expected_return_code: 0
+    timeout: 10

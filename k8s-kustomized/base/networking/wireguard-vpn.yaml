@@ -1,0 +1,218 @@
+---
+
+# WireGuard VPN Server for Secure Homelab Access
+# Provides secure VPN access without authentication friction
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wireguard-vpn
+  labels:
+    app.kubernetes.io/name: wireguard-vpn
+    app.kubernetes.io/component: vpn-server
+---
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: wireguard-config
+  namespace: wireguard-vpn
+  labels:
+    app.kubernetes.io/name: wireguard-vpn
+    app.kubernetes.io/component: config
+data:
+  # WireGuard server configuration
+  wg0.conf: |
+    [Interface]
+    # Server configuration
+    Address = 10.13.13.1/24
+    ListenPort = 51820
+    PrivateKey = SERVER_PRIVATE_KEY_PLACEHOLDER
+
+    # IP forwarding and NAT rules
+    PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+    PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
+
+    # Client configurations will be added here
+    # [Peer]
+    # PublicKey = CLIENT_PUBLIC_KEY
+    # AllowedIPs = 10.13.13.2/32
+
+  # Client configuration template
+  client-template.conf: |
+    [Interface]
+    PrivateKey = CLIENT_PRIVATE_KEY_PLACEHOLDER
+    Address = 10.13.13.2/32
+    DNS = 8.8.8.8  # Use external DNS (RPi removed)
+
+    [Peer]
+    PublicKey = SERVER_PUBLIC_KEY_PLACEHOLDER
+    Endpoint = YOUR_PUBLIC_IP:51820
+    AllowedIPs = 10.0.0.0/22, 10.13.13.0/24  # Homelab network + VPN network
+    PersistentKeepalive = 25
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wireguard-server
+  namespace: wireguard-vpn
+  labels:
+    app.kubernetes.io/name: wireguard-vpn
+    app.kubernetes.io/component: vpn-server
+spec:
+  replicas: 1 # VPN server should be singleton
+  selector:
+    matchLabels:
+      app: wireguard-server
+  template:
+    metadata:
+      labels:
+        app: wireguard-server
+        app.kubernetes.io/name: wireguard-vpn
+        app.kubernetes.io/component: vpn-server
+    spec:
+      # Run on specific node for consistent external IP
+      nodeSelector:
+        node-type: master # Run on EliteMini for better performance
+
+      # Privileged container for network operations
+      securityContext:
+        sysctls:
+          - name: net.ipv4.ip_forward
+            value: "1"
+          - name: net.ipv4.conf.all.src_valid_mark
+            value: "1"
+
+      containers:
+        - name: wireguard
+          image: linuxserver/wireguard:latest
+          securityContext:
+            privileged: true
+            capabilities:
+              add:
+                - NET_ADMIN
+                - SYS_MODULE
+
+          ports:
+            - containerPort: 51820
+              protocol: UDP
+              name: wireguard
+
+          env:
+            - name: PUID
+              value: "1000"
+            - name: PGID
+              value: "1000"
+            - name: TZ
+              value: "America/Los_Angeles" # Adjust to your timezone
+            - name: SERVERURL
+              value: "auto" # Auto-detect public IP
+            - name: SERVERPORT
+              value: "51820"
+            - name: PEERS
+              value: "chris-laptop,chris-phone,chris-tablet" # Your devices
+            - name: PEERDNS
+              value: "8.8.8.8" # Use external DNS (RPi removed)
+            - name: INTERNAL_SUBNET
+              value: "10.13.13.0"
+            - name: ALLOWEDIPS
+              value: "10.0.0.0/22,10.13.13.0/24" # Homelab + VPN networks
+
+          volumeMounts:
+            - name: config
+              mountPath: /config
+            - name: lib-modules
+              mountPath: /lib/modules
+              readOnly: true
+
+          # Health check
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "wg show | grep -q interface"
+            initialDelaySeconds: 30
+            periodSeconds: 30
+
+          # Resource limits
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+
+      volumes:
+        - name: config
+          persistentVolumeClaim:
+            claimName: wireguard-config-pvc
+        - name: lib-modules
+          hostPath:
+            path: /lib/modules
+            type: Directory
+
+      # Restart policy
+      restartPolicy: Always
+---
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: wireguard-config-pvc
+  namespace: wireguard-vpn
+  labels:
+    app.kubernetes.io/name: wireguard-vpn
+    app.kubernetes.io/component: storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: local-path # K3s default storage class
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: wireguard-server
+  namespace: wireguard-vpn
+  labels:
+    app.kubernetes.io/name: wireguard-vpn
+    app.kubernetes.io/component: vpn-service
+  annotations:
+    metallb.universe.tf/loadBalancerIPs: 10.0.0.201 # Dedicated IP for VPN
+spec:
+  type: LoadBalancer
+  selector:
+    app: wireguard-server
+  ports:
+    - name: wireguard
+      port: 51820
+      targetPort: 51820
+      protocol: UDP
+  externalTrafficPolicy: Local # Preserve source IP
+---
+
+# Network Policy to restrict VPN access
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: wireguard-network-policy
+  namespace: wireguard-vpn
+spec:
+  podSelector:
+    matchLabels:
+      app: wireguard-server
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from: [] # Allow from anywhere (VPN clients)
+      ports:
+        - protocol: UDP
+          port: 51820
+  egress:
+    - to: [] # Allow to anywhere (for routing)

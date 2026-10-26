@@ -1,0 +1,102 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: argocd-base
+
+namespace: argocd
+
+resources:
+  # ArgoCD installation from official manifests
+  - https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+  # Custom configurations
+  - argocd-ingress.yaml
+  - webhook-config.yaml
+  # Applications managed by ArgoCD
+  - applications/homelab-apps.yaml
+  - applications/ai-gateway.yaml
+  # applications/homelab-orchestrator.yaml retired 2026-09-03: its daily
+  # digest is now overlays/production/kagent/digest.yaml on the fleet.
+  - applications/kata-deploy.yaml
+
+patches:
+  # Enable insecure mode for ArgoCD server
+  - target:
+      kind: Deployment
+      name: argocd-server
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --insecure
+
+  # Configure ArgoCD ConfigMap
+  - target:
+      kind: ConfigMap
+      name: argocd-cm
+    patch: |-
+      - op: add
+        path: /data/url
+        value: https://argocd.example.com
+      # Track resources by annotation, not by the app.kubernetes.io/instance
+      # label. Operators copy that label from a parent onto children they
+      # create (actions-runner-controller's AutoscalingListener, Role and
+      # RoleBinding), and label tracking made Argo prune those children on
+      # every sync: 479 listener recreations in 22h from 2026-09-06 21:36Z,
+      # each one cancelling the CI job on the runner it killed.
+      - op: add
+        path: /data/application.resourceTrackingMethod
+        value: annotation
+      - op: add
+        path: /data/repositories
+        value: |
+          - type: git
+            url: git@github.com:ctkadvisors/new_localai.git
+            name: homelab-repo
+          - type: git
+            url: git@github.com:ctkadvisors/ai-gateway.git
+            name: ai-gateway-repo
+          - type: git
+            url: https://github.com/ctkadvisors/homelab-orchestrator.git
+            name: homelab-orchestrator-repo
+      # Cluster-wide health-check override for Ingress resources.
+      # Traefik-on-K3s does not populate `.status.loadBalancer.ingress[]`
+      # on Ingress resources (no service-type LoadBalancer in front). Argo's
+      # default Ingress health check expects that field, so every Ingress
+      # appears "Progressing" forever — and any Argo Application that
+      # waits on its Ingress to be Healthy (sync waves, post-sync hooks)
+      # blocks indefinitely. This override declares Ingresses Healthy
+      # unconditionally, matching the cluster's actual ingress posture
+      # (Traefik routes are functional regardless of status field).
+      #
+      # Symptom that motivated this: kagent-workbench's auto-sync got
+      # stuck "waiting for healthy state of Ingress/kagent-workbench"
+      # for 3+ hours, blocking the v0.1.9-rc.2 image rollout.
+      - op: add
+        path: /data/resource.customizations.health.networking.k8s.io_Ingress
+        value: |
+          hs = {}
+          hs.status = "Healthy"
+          hs.message = "Ingress treated as Healthy — Traefik-on-K3s does not populate loadBalancer.ingress[]"
+          return hs
+      # SealedSecrets are reconciled by the controller into regular Secret
+      # objects, but this cluster's CRD/controller combination does not
+      # populate status conditions on the SealedSecret resources. ArgoCD's
+      # built-in health check waits for those conditions and leaves syncs
+      # stuck Progressing even after the target Secret exists.
+      - op: add
+        path: /data/resource.customizations.health.bitnami.com_SealedSecret
+        value: |
+          hs = {}
+          hs.status = "Healthy"
+          hs.message = "SealedSecret treated as Healthy; controller-created Secret is verified by Kubernetes reconciliation"
+          return hs
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: argocd
+      app.kubernetes.io/managed-by: kustomize
+
+images:
+  # Pin to stable versions for production use
+  - name: quay.io/argoproj/argocd
+    newTag: v2.14.0

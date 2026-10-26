@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Chris Knuteson
+#
+# Bytebot — self-hosted AI desktop agent. Draft overlay; not yet wired
+# into overlays/production/kustomization.yaml.
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: bytebot-production
+  annotations:
+    config.kubernetes.io/local-config: 'true'
+    description: 'Bytebot desktop agent — desktop/agent/ui/postgres/llm-proxy + IngressRoute + NetworkPolicies'
+
+resources:
+  - bytebot.yaml
+
+labels:
+  - pairs:
+      environment: production
+      deployment: homelab-prod
+      component: bytebot
+
+commonAnnotations:
+  deployment.kubernetes.io/environment: 'production'

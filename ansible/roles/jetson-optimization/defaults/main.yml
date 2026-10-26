@@ -1,0 +1,153 @@
+---
+# Default variables for jetson-optimization role
+
+# Jetson Platform Detection
+jetson_platform: "{{ jetson_platform | default('auto') }}"  # auto, orin-nano, orin-nx, xavier-nx, etc.
+
+# Performance Configuration
+jetson_performance:
+  # Power mode (0 = MAXN, 1 = 5W, 2 = 10W, etc.)
+  power_mode: "{{ jetson_power_mode | default(0) }}"
+  
+  # Performance mode (maxn, balanced, power-save)
+  mode: "{{ jetson_performance_mode | default('maxn') }}"
+  
+  # CPU governor
+  cpu_governor: "performance"
+  
+  # Fan control (auto, manual)
+  fan_control: "auto"
+  
+  # GPU settings
+  gpu:
+    memory_clock_offset: 0
+    graphics_clock_offset: 0
+    power_limit: null  # Will be set based on platform
+
+# Jetson Stats (jtop) Configuration
+jtop:
+  enabled: true
+  install: true
+  service_enabled: true
+  
+  # Monitoring configuration
+  monitoring:
+    interval: 1  # seconds
+    log_enabled: false
+    log_path: "/var/log/jtop.log"
+
+# Temperature and Thermal Management
+thermal_management:
+  enabled: true
+  
+  # Temperature thresholds (Celsius)
+  thresholds:
+    warning: 75
+    critical: 85
+    shutdown: 95
+  
+  # Thermal zones to monitor
+  thermal_zones:
+    - "thermal_zone0"  # CPU
+    - "thermal_zone1"  # GPU
+    - "thermal_zone2"  # AUX
+    - "thermal_zone3"  # AO
+
+# System Optimizations
+system_optimizations:
+  # Memory settings
+  memory:
+    swappiness: 1
+    dirty_ratio: 15
+    dirty_background_ratio: 5
+    
+  # CPU settings
+  cpu:
+    scaling_governor: "performance"
+    scaling_min_freq: null  # Will be set based on platform
+    scaling_max_freq: null  # Will be set based on platform
+    
+  # I/O scheduler
+  io_scheduler: "mq-deadline"
+  
+  # Network optimizations
+  network:
+    tcp_congestion_control: "bbr"
+    tcp_window_scaling: 1
+    net_core_rmem_max: 134217728
+    net_core_wmem_max: 134217728
+
+# CUDA and GPU Configuration
+cuda_config:
+  # CUDA version (will be detected automatically)
+  version: "auto"
+  
+  # GPU persistence mode
+  persistence_mode: true
+  
+  # GPU power management
+  power_management: "adaptive"
+  
+  # Memory clock settings
+  memory_clock: "max"
+  
+  # Graphics clock settings
+  graphics_clock: "max"
+
+# Monitoring and Logging
+monitoring:
+  # System monitoring
+  system_stats:
+    enabled: true
+    interval: 30  # seconds
+    
+  # GPU monitoring
+  gpu_stats:
+    enabled: true
+    interval: 10  # seconds
+    
+  # Temperature monitoring
+  thermal_stats:
+    enabled: true
+    interval: 5  # seconds
+    
+  # Log rotation
+  log_rotation:
+    enabled: true
+    max_size: "10M"
+    max_files: 5
+
+# Service Configuration
+services:
+  # Jetson performance service
+  jetson_performance:
+    enabled: true
+    name: "jetson-performance"
+    
+  # NVIDIA persistence daemon
+  nvidia_persistenced:
+    enabled: true
+    
+  # Custom monitoring services
+  monitoring_services:
+    enabled: false  # Enable if custom monitoring is needed
+
+# Platform-specific settings (will be set based on detection)
+platform_settings:
+  orin_nano:
+    max_power: 15  # Watts
+    cpu_max_freq: 1500000  # 1.5 GHz
+    gpu_max_freq: 625000   # 625 MHz
+    memory_size: 8192      # 8GB
+    
+  orin_nx:
+    max_power: 25  # Watts
+    cpu_max_freq: 2000000  # 2.0 GHz
+    gpu_max_freq: 765000   # 765 MHz
+    memory_size: 16384     # 16GB
+    
+  xavier_nx:
+    max_power: 20  # Watts
+    cpu_max_freq: 1900000  # 1.9 GHz
+    gpu_max_freq: 1100000  # 1.1 GHz
+    memory_size: 8192      # 8GB

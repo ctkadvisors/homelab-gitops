@@ -1,0 +1,91 @@
+# brain-scribe — the brain's first automatic feed. Hourly: any alert that
+# STARTED firing in the last window becomes a graphiti episode (real event
+# text incl. timestamps; graphiti extracts the temporal facts). Stateless
+# dedup: a continuously-firing alert is reported once, when it starts.
+# ponytail: alerts only for v1; session summaries and Argo events are the
+# next feeds, same shape.
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: brain-scribe
+  namespace: ai-services
+  labels:
+    app: brain-scribe
+    app.kubernetes.io/component: agent-memory
+spec:
+  schedule: 5 * * * *
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app: brain-scribe
+        spec:
+          restartPolicy: Never
+          enableServiceLinks: false
+          # fleet-scripts is amd64-only; the arm64 k3s-reconciler VM ate every
+          # scribe run for five hours on 2026-09-06 when it rejoined the cluster.
+          nodeSelector:
+            kubernetes.io/arch: amd64
+          containers:
+          - name: scribe
+            image: git.example.com/homelab/fleet-scripts:20260904o
+            command:
+            - python3
+            - /app/scripts/scribe.py
+            env:
+            - name: ALERTMANAGER_URL
+              value: http://alertmanager.monitoring.svc.cluster.local:9093
+            - name: BRAIN_URL
+              value: http://graphiti-mcp.ai-services.svc.cluster.local:8000/mcp
+            - name: BRAIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: graphiti-brain-token
+                  key: token
+            resources:
+              requests:
+                memory: 64Mi
+                cpu: 50m
+              limits:
+                memory: 128Mi
+                cpu: 200m
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: brain-scribe-egress
+  namespace: ai-services
+spec:
+  podSelector:
+    matchLabels:
+      app: brain-scribe
+  policyTypes:
+  - Egress
+  egress:
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+    ports:
+    - protocol: TCP
+      port: 9093
+  - to:
+    - podSelector:
+        matchLabels:
+          app: graphiti-mcp
+    ports:
+    - protocol: TCP
+      port: 8080

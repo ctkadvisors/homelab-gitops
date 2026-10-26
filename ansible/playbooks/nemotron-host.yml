@@ -1,0 +1,11 @@
+---
+# Configure dedicated Nemotron inference hosts (out-of-cluster).
+# Run: ansible-playbook -i inventory/hosts.yml playbooks/nemotron-host.yml
+#
+# Reproduces the state on jetson1 after the 2026-04-18 in-place reset.
+- name: Configure Nemotron inference hosts
+  hosts: nemotron_hosts
+  become: false
+  gather_facts: true
+  roles:
+    - nemotron-host

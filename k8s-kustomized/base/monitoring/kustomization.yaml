@@ -1,0 +1,61 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: monitoring-stack
+  annotations:
+    config.kubernetes.io/local-config: "true"
+
+namespace: monitoring
+
+# Resources to include
+resources:
+  - namespace.yaml
+  - prometheus.yaml
+  - grafana.yaml
+  - alertmanager.yaml
+  - alertmanager-telegram-secret-sealed.yaml
+  - node-exporter.yaml
+  - kube-state-metrics.yaml
+  # - metrics-server.yaml  # Removed: K3s already provides metrics-server
+  # - nvidia-dcgm-exporter.yaml  # Official NVIDIA GPU metrics exporter (disabled due to Jetson incompatibility)
+  - jetson-tegrastats-exporter.yaml # Jetson-specific GPU monitoring with tegrastats
+  # - ollama-metrics-exporter.yaml  # Removed - using LocalAI instead of Ollama
+  # TODO: Add localai-metrics-exporter.yaml when needed
+  - ingress-routes.yaml
+  - dashboards/grafana-dashboard-project-resources.yaml
+  - dashboards/grafana-dashboard-infrastructure-overview.yaml
+  # jetson-gpu dashboard removed 2026-04-25 — jetson1 was decommissioned
+  # (repurposed as standalone Ollama for hermes); jetson2 remains but the
+  # dedicated GPU dashboard mounted via subPath was triggering a runc
+  # "not a directory" mount error blocking grafana rollout. Jetson2 GPU
+  # metrics are still surfaced inline via the jetson-ai-workloads.json
+  # panel inside grafana-dashboard-kubernetes (grafana.yaml).
+
+# Common labels applied to all resources
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: local-ai-homelab
+      app.kubernetes.io/managed-by: kustomize
+      component: monitoring
+
+# Common annotations
+commonAnnotations:
+  config.kubernetes.io/origin: |
+    path: k8s-kustomized/base/monitoring/kustomization.yaml
+
+# Images to use (pinned versions for stability)
+images:
+  - name: prom/prometheus
+    newTag: v2.48.0
+  - name: grafana/grafana
+    newTag: 10.2.0
+  - name: prom/alertmanager
+    newTag: v0.26.0
+  - name: prom/node-exporter
+    newTag: v1.7.0
+  - name: registry.k8s.io/kube-state-metrics/kube-state-metrics
+    newTag: v2.10.1
+  # - name: registry.k8s.io/metrics-server/metrics-server  # Removed: using K3s metrics-server
+  #   newTag: v0.7.0

@@ -1,0 +1,271 @@
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: openwebui-ingress
+  namespace: ai-services
+  labels:
+    app: openwebui
+    app.kubernetes.io/name: openwebui
+    app.kubernetes.io/component: ingress
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`chat.example.com`)
+      kind: Rule
+      services:
+        - name: openwebui
+          port: 8080
+  tls:
+    secretName: example-tls
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: openwebui-ip-ingress
+  namespace: ai-services
+  labels:
+    app: openwebui
+    app.kubernetes.io/name: openwebui
+    app.kubernetes.io/component: ingress-fallback
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`10.0.0.200`)
+      kind: Rule
+      services:
+        - name: openwebui
+          port: 8080
+  tls:
+    secretName: example-tls
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: n8n-ingress
+  namespace: automation
+  labels:
+    app: n8n
+    app.kubernetes.io/name: n8n
+    app.kubernetes.io/component: ingress
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`n8n.example.com`)
+      kind: Rule
+      services:
+        - name: n8n
+          port: 5678
+  tls:
+    secretName: example-tls
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: argocd-ingress
+  namespace: argocd
+  labels:
+    app: argocd-server
+    app.kubernetes.io/name: argocd-server
+    app.kubernetes.io/component: ingress
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`argocd.example.com`)
+      kind: Rule
+      services:
+        - name: argocd-server
+          port: 80
+  tls:
+    secretName: example-tls
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: traefik-dashboard-ingress
+  namespace: ingress-system
+  labels:
+    app: traefik
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: dashboard-ingress
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`traefik.example.com`)
+      kind: Rule
+      services:
+        - name: traefik
+          port: 8080
+      middlewares:
+        - name: traefik-dashboard-redirect
+  tls:
+    secretName: example-tls
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: traefik-dashboard-redirect
+  namespace: ingress-system
+  labels:
+    app: traefik
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: middleware
+spec:
+  redirectRegex:
+    regex: ^https://traefik\.example\.io/?$
+    replacement: https://traefik.example.com/dashboard/
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: mcpo-control-panel-ingress
+  namespace: ai-services
+  labels:
+    app: mcpo-control-panel
+    app.kubernetes.io/name: mcpo-control-panel
+    app.kubernetes.io/component: ingress
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`mcpo.example.com`)
+      kind: Rule
+      services:
+        - name: mcpo-control-panel
+          port: 8083
+  tls:
+    secretName: example-tls
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: qdrant-ingress
+  namespace: vector-db
+  labels:
+    app: qdrant
+    app.kubernetes.io/name: qdrant
+    app.kubernetes.io/component: ingress
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`qdrant.example.com`)
+      kind: Rule
+      services:
+        - name: qdrant
+          port: 6333
+  tls:
+    secretName: example-tls
+
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: grafana-example-ingress
+  namespace: monitoring
+  labels:
+    app: grafana
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: ingress-example
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`grafana.example.com`)
+      kind: Rule
+      services:
+        - name: grafana
+          port: 3000
+  tls:
+    secretName: example-tls
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: prometheus-example-ingress
+  namespace: monitoring
+  labels:
+    app: prometheus
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/component: ingress-example
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`prometheus.example.com`)
+      kind: Rule
+      services:
+        - name: prometheus
+          port: 9090
+  tls:
+    secretName: example-tls
+
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: platform-dashboard-example-ingress
+  namespace: platform
+  labels:
+    app: platform-dashboard
+    app.kubernetes.io/name: platform-dashboard
+    app.kubernetes.io/component: ingress-example
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`platform.example.com`)
+      kind: Rule
+      services:
+        - name: platform-dashboard
+          port: 3000
+  tls:
+    secretName: example-tls
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: platform-api-example-ingress
+  namespace: platform
+  labels:
+    app: platform-api
+    app.kubernetes.io/name: platform-api
+    app.kubernetes.io/component: ingress-example
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`api.example.com`)
+      kind: Rule
+      services:
+        - name: platform-api
+          port: 3001
+  tls:
+    secretName: example-tls
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: n8n-mcp-server-example-ingress
+  namespace: automation
+  labels:
+    app: n8n-mcp-memory
+    app.kubernetes.io/name: n8n-mcp-memory
+    app.kubernetes.io/component: ingress-example
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`n8n-mcp.example.com`)
+      kind: Rule
+      services:
+        - name: n8n-mcp-server
+          port: 3000
+  tls:
+    secretName: example-tls
+# TLS Certificate Secret (example-tls) will be managed by cert-manager

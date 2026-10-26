@@ -1,0 +1,185 @@
+# The org-scoped runner scale set. Workflows target it with
+# `runs-on: homelab`; the fleet rewrites `ubuntu-latest` to `homelab`
+# across the repos as missions (18 workflows, one PR each). Docker-in-
+# Docker so build-push-action and service containers work unchanged;
+# that means privileged runner pods, so they stay on elitemini2 and
+# scale to zero when idle.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: arc-runners
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: arc-runners
+    app.kubernetes.io/part-of: local-ai-homelab
+  annotations:
+    argocd.argoproj.io/sync-wave: '2'
+spec:
+  project: default
+  source:
+    repoURL: ghcr.io/actions/actions-runner-controller-charts
+    chart: gha-runner-scale-set
+    targetRevision: 0.14.2
+    helm:
+      releaseName: homelab
+      values: |
+        githubConfigUrl: https://github.com/ctkadvisors
+        # SealedSecret github-app-arc (github_app_id / _installation_id / _private_key).
+        githubConfigSecret: github-app-arc
+        runnerScaleSetName: homelab
+        minRunners: 0
+        maxRunners: 4
+        # The chart's `containerMode: dind` template, spelled out, for one
+        # change: dind-sock is a tmpfs. Under Kata an ordinary emptyDir is
+        # host-backed and shared into the VM over virtiofs, which cannot
+        # carry Unix sockets: dockerd came up fine, the runner still got
+        # "Cannot connect to the Docker daemon" (2026-09-04). medium: Memory
+        # is guest-local. Keep in step with the reference block in
+        # charts/gha-runner-scale-set/values.yaml when bumping the chart.
+        controllerServiceAccount:
+          namespace: arc-systems
+          name: arc-gha-rs-controller
+        template:
+          spec:
+            # Workflow YAML is code GitHub sends us and we execute; as a
+            # privileged dind pod that was arbitrary code on elitemini2.
+            # Kata puts each job in its own microVM, like the agent pods.
+            runtimeClassName: kata-qemu
+            nodeSelector:
+              node-type: compute-worker
+            initContainers:
+              # hostPath dirs are created root-owned; the runner is uid 1001.
+              - name: init-npm-cache
+                image: docker:dind
+                command: ["sh", "-c", "chown 1001:123 /cache && chmod 775 /cache"]
+                securityContext:
+                  runAsUser: 0
+                volumeMounts:
+                  - name: npm-cache
+                    mountPath: /cache
+              - name: init-dind-externals
+                image: ghcr.io/quipper/actions-runner:2.337.0@sha256:799443d08b5c466ed6c63621e54ee1c2cd32af22b713dd275292883ea0004a6a
+                command: ["cp", "-r", "/home/runner/externals/.", "/home/runner/tmpDir/"]
+                volumeMounts:
+                  - name: dind-externals
+                    mountPath: /home/runner/tmpDir
+              - name: dind
+                image: docker:dind
+                args:
+                  - dockerd
+                  - --host=unix:///var/run/docker.sock
+                  - --group=$(DOCKER_GROUP_GID)
+                env:
+                  - name: DOCKER_GROUP_GID
+                    value: "123"
+                securityContext:
+                  privileged: true
+                restartPolicy: Always
+                startupProbe:
+                  exec:
+                    command: ["docker", "info"]
+                  initialDelaySeconds: 0
+                  failureThreshold: 24
+                  periodSeconds: 5
+                volumeMounts:
+                  - name: work
+                    mountPath: /home/runner/_work
+                  - name: dind-sock
+                    mountPath: /var/run
+                  - name: dind-externals
+                    mountPath: /home/runner/externals
+                  - name: docker-data
+                    mountPath: /var/lib/docker
+            containers:
+              - name: runner
+                # ghcr.io/actions/actions-runner is deliberately minimal: no
+                # make/gcc/python3, so node-gyp (node-pty) fails. quipper's
+                # image is FROM the official one (same /home/runner/run.sh),
+                # adds build-essential + python3 + zstd, and pins the runner
+                # version. Probed 2026-09-03: make gcc g++ python3 git jq curl
+                # docker present; wget and node absent (setup-node covers
+                # node; use curl in workflows). Pinned by digest: a third-party image
+                # running privileged dind must not move under us. Bump tag+digest
+                # together with the runner version.
+                image: ghcr.io/quipper/actions-runner:2.337.0@sha256:799443d08b5c466ed6c63621e54ee1c2cd32af22b713dd275292883ea0004a6a
+                command: ["/home/runner/run.sh"]
+                env:
+                  - name: DOCKER_HOST
+                    value: unix:///var/run/docker.sock
+                  - name: RUNNER_WAIT_FOR_DOCKER_IN_SECONDS
+                    value: "120"
+                  # Four runners starting the same second each ran a 2300-package
+                  # `npm ci` through the VM's virtio network and read-timed-out
+                  # mid-transfer (brutalist_todo main, 2026-09-08 02:20Z: deploy,
+                  # lighthouse and a second lighthouse all died on ETIMEDOUT).
+                  # The runner's env is every step's env: retry harder, and keep
+                  # one npm cache on the node so a package downloads once.
+                  - name: NPM_CONFIG_FETCH_RETRIES
+                    value: "5"
+                  - name: NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT
+                    value: "120000"
+                  - name: NPM_CONFIG_FETCH_TIMEOUT
+                    value: "600000"
+                  - name: NPM_CONFIG_CACHE
+                    value: /home/runner/.npm
+                # Requests are what the scheduler books, not what a job
+                # uses. elitemini2 sat at 98% CPU requested with four
+                # runners at 1 CPU each and the next four stuck Pending
+                # (2026-09-03). CI is bursty; book little, cap high.
+                resources:
+                  requests:
+                    cpu: 250m
+                    memory: 1Gi
+                  limits:
+                    cpu: "6"
+                    memory: 12Gi
+                volumeMounts:
+                  - name: work
+                    mountPath: /home/runner/_work
+                  - name: dind-sock
+                    mountPath: /var/run
+                  - name: npm-cache
+                    mountPath: /home/runner/.npm
+            volumes:
+              # Shared across runners on the node (npm's cacache is safe under
+              # concurrent use); hostPath because ephemeral runners keep nothing.
+              - name: npm-cache
+                hostPath:
+                  path: /var/lib/ci-cache/npm
+                  type: DirectoryOrCreate
+              - name: work
+                emptyDir: {}
+              - name: dind-sock
+                emptyDir:
+                  medium: Memory
+              - name: dind-externals
+                emptyDir: {}
+              # Same virtiofs problem one layer down: overlayfs will not stack
+              # on the dind container's rootfs inside the VM ("mount source:
+              # overlay ... failed"). Guest tmpfs for docker's data; counts
+              # against the pod's memory, hence the cap.
+              - name: docker-data
+                emptyDir:
+                  medium: Memory
+                  sizeLimit: 8Gi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: arc-runners
+  syncPolicy:
+    automated:
+      # prune stays OFF here. The controller creates an AutoscalingListener
+      # (+ Role, RoleBinding) that inherits the runner set's
+      # app.kubernetes.io/instance label, which is also Argo's tracking
+      # label, so Argo saw three "extra" resources and pruned them every
+      # sync from 2026-09-06 21:36Z: 479 listener recreations in 22 hours,
+      # each one killing the runner pod and cancelling the CI job on it
+      # (the ship workflow's "exit 127", kagent#27's cancelled run). The
+      # app reads OutOfSync on those three forever; that is the trade.
+      # Proper fix: application.resourceTrackingMethod: annotation in
+      # argocd-cm, cluster-wide.
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

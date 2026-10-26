@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: n8n
+  namespace: automation
+spec:
+  template:
+    spec:
+      nodeSelector:
+        high-memory: "true"
+      containers:
+        - name: n8n
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "1000m"
+            limits:
+              memory: "8Gi"
+              cpu: "4000m"
+          env:
+            - name: N8N_METRICS
+              value: "true"
+            - name: N8N_DIAGNOSTICS_ENABLED
+              value: "true"
+            - name: EXECUTIONS_PROCESS
+              value: "main"
+            - name: EXECUTIONS_MODE
+              value: "regular"
+            - name: N8N_LOG_LEVEL
+              value: "info"
+            - name: N8N_LOG_OUTPUT
+              value: "console"
+            - name: GENERIC_TIMEZONE
+              value: "America/Los_Angeles"
+            - name: N8N_DEFAULT_BINARY_DATA_MODE
+              value: "filesystem"
+            - name: N8N_PERSISTED_BINARY_DATA_TTL
+              value: "2880"
+            - name: EXECUTIONS_DATA_PRUNE
+              value: "true"
+            - name: EXECUTIONS_DATA_MAX_AGE
+              value: "336"

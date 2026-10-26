@@ -1,0 +1,31 @@
+---
+# Role metadata for jetson-optimization role
+
+galaxy_info:
+  role_name: jetson-optimization
+  author: Local AI Homelab
+  description: NVIDIA Jetson performance optimization and GPU configuration
+  company: Local AI Homelab
+  license: MIT
+  min_ansible_version: 2.9
+  
+  platforms:
+    - name: Ubuntu
+      versions:
+        - "20.04"
+        - "22.04"
+  
+  galaxy_tags:
+    - jetson
+    - nvidia
+    - gpu
+    - performance
+    - optimization
+    - homelab
+
+dependencies:
+  - role: base-system
+
+collections:
+  - community.general
+  - ansible.posix

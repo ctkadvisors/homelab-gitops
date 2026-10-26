@@ -1,0 +1,44 @@
+---
+# Let's Encrypt wildcard certificate for example.com — issued ONCE here,
+# replicated to every consumer namespace by kubernetes-reflector
+# (reflector.yaml in this directory).
+#
+# History (2026-08-04): this file used to stamp out per-namespace copies of
+# the same wildcard Certificate (plus more unmanaged copies had drifted into
+# the cluster). Every copy raced Let's Encrypt for an identical order
+# ("order was already processing" 403s), courted the 5-duplicate-certs/week
+# rate limit, and one wedged DNS-01 cleanup left the whole fleet expired.
+# One issuer + secret reflection removes the entire failure class.
+#
+# Consumer namespaces get the `example-tls` secret auto-created and kept
+# current by reflector — do NOT add per-namespace Certificate resources.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: example-tls
+  namespace: ingress-system
+  labels:
+    app.kubernetes.io/name: example-tls
+    app.kubernetes.io/component: tls-certificate
+spec:
+  secretName: example-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - "example.com"
+    - "*.example.com"
+    # Extra name changes the LE "exact identifier set" so this order is not
+    # a duplicate of the 5-per-week set burned on 2026-08-04/05. Harmless:
+    # wildcard DNS already resolves it. Do not remove casually — dropping it
+    # recreates the exhausted set.
+    - "*.apps.example.com"
+  secretTemplate:
+    annotations:
+      reflector.v1.k8s.emberstack.com/reflection-allowed: "true"
+      reflector.v1.k8s.emberstack.com/reflection-allowed-namespaces: ""
+      reflector.v1.k8s.emberstack.com/reflection-auto-enabled: "true"
+      reflector.v1.k8s.emberstack.com/reflection-auto-namespaces: ""
+
+# Sync note: 2026-08-05 — re-trigger after auto-sync retry exhaustion on a821fc9 (transient Job immutability).
+# 2026-08-05: second nudge — prior op state latched Failed on a deleted Job; fresh revision forces full sync+prune.

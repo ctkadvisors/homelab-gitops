@@ -1,0 +1,121 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-memory-mcp
+  namespace: search
+  labels:
+    app: agent-memory-mcp
+    app.kubernetes.io/name: agent-memory-mcp
+    app.kubernetes.io/component: mcp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-memory-mcp
+  template:
+    metadata:
+      labels:
+        app: agent-memory-mcp
+        app.kubernetes.io/name: agent-memory-mcp
+        app.kubernetes.io/component: mcp
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: elitemini2
+      imagePullSecrets:
+        - name: gitea-registry-secret
+      containers:
+        - name: agent-memory-mcp
+          image: git.example.com/homelab/agent-memory-mcp:0.1.1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: PORT
+              value: "8080"
+            - name: OPENSEARCH_URL
+              value: "https://opensearch.search.svc.cluster.local:9200"
+            - name: OPENSEARCH_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: opensearch-credentials
+                  key: admin-username
+            - name: OPENSEARCH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: opensearch-credentials
+                  key: admin-password
+            - name: OPENSEARCH_SSL_REJECT_UNAUTHORIZED
+              value: "false"
+            - name: OPENSEARCH_MODEL_ID
+              valueFrom:
+                secretKeyRef:
+                  name: opensearch-credentials
+                  key: embedding-model-id
+                  optional: true
+            - name: MCP_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: opensearch-credentials
+                  key: mcp-bearer-token
+                  optional: true
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-memory-mcp
+  namespace: search
+  labels:
+    app: agent-memory-mcp
+    app.kubernetes.io/name: agent-memory-mcp
+    app.kubernetes.io/component: mcp
+spec:
+  selector:
+    app: agent-memory-mcp
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+  type: ClusterIP
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: agent-memory-mcp-ingress
+  namespace: search
+  labels:
+    app: agent-memory-mcp
+    app.kubernetes.io/name: agent-memory-mcp
+    app.kubernetes.io/component: ingress
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`agent-memory.example.com`)
+      kind: Rule
+      services:
+        - name: agent-memory-mcp
+          port: 8080
+  tls:
+    secretName: example-tls

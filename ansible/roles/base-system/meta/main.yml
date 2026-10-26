@@ -1,0 +1,34 @@
+---
+# Role metadata for base-system role
+
+galaxy_info:
+  role_name: base-system
+  author: Local AI Homelab
+  description: Base system configuration for Local AI Homelab nodes
+  company: Local AI Homelab
+  license: MIT
+  min_ansible_version: 2.9
+  
+  platforms:
+    - name: Ubuntu
+      versions:
+        - "20.04"
+        - "22.04"
+    - name: Debian
+      versions:
+        - "11"
+        - "12"
+  
+  galaxy_tags:
+    - system
+    - base
+    - configuration
+    - homelab
+    - k3s
+    - docker
+
+dependencies: []
+
+collections:
+  - community.general
+  - ansible.posix

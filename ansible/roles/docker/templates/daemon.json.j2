@@ -1,0 +1,51 @@
+{
+  "log-driver": "{{ docker.daemon_config.log_driver }}",
+  "log-opts": {
+{% for key, value in docker.daemon_config.log_opts.items() %}
+    "{{ key }}": "{{ value }}"{% if not loop.last %},{% endif %}
+{% endfor %}
+  },
+  "storage-driver": "{{ docker.daemon_config.storage_driver }}",
+  "exec-opts": [
+{% for opt in docker.daemon_config.exec_opts %}
+    "{{ opt }}"{% if not loop.last %},{% endif %}
+{% endfor %}
+  ],
+  "features": {
+{% for key, value in docker.daemon_config.features.items() %}
+    "{{ key }}": {{ value | lower }}{% if not loop.last %},{% endif %}
+{% endfor %}
+  },
+  "experimental": {{ docker.daemon_config.experimental | lower }},
+  "live-restore": {{ docker.daemon_config.live_restore | lower }},
+  "userland-proxy": {{ docker.daemon_config.userland_proxy | lower }},
+  "data-root": "/var/lib/docker",
+  "hosts": ["unix:///var/run/docker.sock"],
+  "max-concurrent-downloads": 3,
+  "max-concurrent-uploads": 5,
+  "default-ulimits": {
+    "nofile": {
+      "Name": "nofile",
+      "Hard": {{ container_optimizations.limits.nofile }},
+      "Soft": {{ container_optimizations.limits.nofile }}
+    },
+    "nproc": {
+      "Name": "nproc",
+      "Hard": {{ container_optimizations.limits.nproc }},
+      "Soft": {{ container_optimizations.limits.nproc }}
+    }
+  }{% if nvidia_runtime.enabled %},
+  "default-runtime": "{{ nvidia_runtime.runtime_config.default_runtime }}",
+  "runtimes": {
+{% for runtime_name, runtime_config in nvidia_runtime.runtime_config.runtimes.items() %}
+    "{{ runtime_name }}": {
+      "path": "{{ runtime_config.path }}"{% if runtime_config.runtimeArgs %},
+      "runtimeArgs": [
+{% for arg in runtime_config.runtimeArgs %}
+        "{{ arg }}"{% if not loop.last %},{% endif %}
+{% endfor %}
+      ]{% endif %}
+    }{% if not loop.last %},{% endif %}
+{% endfor %}
+  }{% endif %}
+}

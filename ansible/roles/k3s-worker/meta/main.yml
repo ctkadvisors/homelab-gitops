@@ -1,0 +1,36 @@
+---
+# Role metadata for k3s-worker role
+
+galaxy_info:
+  role_name: k3s-worker
+  author: Local AI Homelab
+  description: K3s worker node installation and configuration
+  company: Local AI Homelab
+  license: MIT
+  min_ansible_version: 2.9
+  
+  platforms:
+    - name: Ubuntu
+      versions:
+        - "20.04"
+        - "22.04"
+    - name: Debian
+      versions:
+        - "11"
+        - "12"
+  
+  galaxy_tags:
+    - k3s
+    - kubernetes
+    - worker
+    - agent
+    - homelab
+    - gpu
+
+dependencies:
+  - role: base-system
+  - role: docker
+
+collections:
+  - kubernetes.core
+  - community.general

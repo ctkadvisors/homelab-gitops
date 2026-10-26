@@ -1,0 +1,39 @@
+---
+# Out-of-cluster Ollama endpoint on jetson1 (10.0.0.73:11434).
+# jetson1 was drained from K3s on 2026-04-18 and dedicated to bare-metal
+# Ollama running Nemotron-3-Nano-4B Q4_K_M. Managed via Ansible role
+# `nemotron-host` (ansible/roles/nemotron-host/).
+#
+# This Service + manually-managed Endpoints lets in-cluster pods reach
+# the inference host via in-cluster DNS at:
+#   http://ollama-nemotron.ai-services.svc.cluster.local:11434
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama-nemotron
+  namespace: ai-services
+  labels:
+    app: ollama-nemotron
+    app.kubernetes.io/component: inference
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 11434
+      protocol: TCP
+      targetPort: 11434
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: ollama-nemotron
+  namespace: ai-services
+  labels:
+    app: ollama-nemotron
+subsets:
+  - addresses:
+      - ip: 10.0.0.73
+    ports:
+      - name: http
+        port: 11434
+        protocol: TCP

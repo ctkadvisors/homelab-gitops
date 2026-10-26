@@ -1,0 +1,147 @@
+---
+# Main site playbook for Local AI Homelab
+# This playbook configures all nodes in the cluster
+
+- name: Configure all nodes with base system
+  hosts: all
+  become: yes
+  gather_facts: yes
+  tags: base
+
+  pre_tasks:
+    - name: Display playbook information
+      debug:
+        msg:
+          - "Starting Local AI Homelab configuration"
+          - "Target host: {{ inventory_hostname }}"
+          - "Host groups: {{ group_names }}"
+          - "Ansible user: {{ ansible_user }}"
+      tags: always
+
+    - name: Wait for system to be ready
+      wait_for_connection:
+        timeout: 300
+      tags: always
+
+    - name: Gather system facts
+      setup:
+      tags: always
+
+  roles:
+    - role: base-system
+      tags: base-system
+
+    - role: docker
+      tags: docker
+
+  post_tasks:
+    - name: Display base configuration completion
+      debug:
+        msg:
+          - "Base system configuration completed for {{ inventory_hostname }}"
+          - "Node type: {{ node_type | default('undefined') }}"
+          - "Services: {{ services | default([]) }}"
+      tags: always
+
+- name: Configure K3s master nodes
+  hosts: k3s_masters
+  become: yes
+  gather_facts: yes
+  tags: k3s-master
+
+  pre_tasks:
+    - name: Display K3s master configuration info
+      debug:
+        msg:
+          - "Configuring K3s master: {{ inventory_hostname }}"
+          - "Master IP: {{ ansible_default_ipv4.address }}"
+          - "Cluster domain: {{ k3s.cluster.domain }}"
+      tags: always
+
+  roles:
+    - role: k3s-master
+      tags: k3s-master
+
+    - role: dns
+      tags: dns
+      when: inventory_hostname in groups['k3s_masters']
+
+- name: Configure K3s worker nodes
+  hosts: k3s_workers
+  become: yes
+  gather_facts: yes
+  tags: k3s-worker
+
+  pre_tasks:
+    - name: Display K3s worker configuration info
+      debug:
+        msg:
+          - "Configuring K3s worker: {{ inventory_hostname }}"
+          - "Worker IP: {{ ansible_default_ipv4.address }}"
+          - "GPU enabled: {{ gpu_enabled | default(false) }}"
+      tags: always
+
+  roles:
+    - role: k3s-worker
+      tags: k3s-worker
+
+- name: Configure GPU workers
+  hosts: gpu_workers
+  become: yes
+  gather_facts: yes
+  tags: gpu
+
+  pre_tasks:
+    - name: Display GPU worker configuration info
+      debug:
+        msg:
+          - "Configuring GPU worker: {{ inventory_hostname }}"
+          - "GPU type: {{ gpu_type | default('nvidia') }}"
+          - "Jetson platform: {{ jetson_platform | default('orin-nano') }}"
+      tags: always
+
+  roles:
+    - role: jetson-optimization
+      tags: jetson-optimization
+
+- name: Configure compute workers
+  hosts: compute_workers
+  become: yes
+  gather_facts: yes
+  tags: compute
+
+  pre_tasks:
+    - name: Display compute worker configuration info
+      debug:
+        msg:
+          - "Configuring compute worker: {{ inventory_hostname }}"
+          - "GPU type: {{ gpu_type | default('amd') }}"
+          - "Architecture: {{ architecture | default('x86_64') }}"
+      tags: always
+
+  roles:
+    - role: compute-optimization
+      tags: compute-optimization
+
+- name: Final validation and summary
+  hosts: all
+  become: yes
+  gather_facts: no
+  tags: validation
+
+  tasks:
+    - name: Validate system configuration
+      debug:
+        msg:
+          - "Validation tasks will be implemented"
+          - "This will check system health and readiness"
+      tags: validation
+
+    - name: Display deployment summary
+      debug:
+        msg:
+          - "Local AI Homelab Ansible configuration completed"
+          - "Configured hosts: {{ ansible_play_hosts | length }}"
+          - "Next step: Implement K3s installation roles"
+      tags: always
+      run_once: true

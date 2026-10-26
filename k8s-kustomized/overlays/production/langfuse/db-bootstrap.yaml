@@ -1,0 +1,85 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Chris Knuteson
+#
+# Langfuse postgres bootstrap on the existing shared postgres in the
+# database namespace (pgvector/pgvector:pg16). Same pattern the
+# kagent-llm-gateway uses (see new_localai/.../kagent/llm-gateway-db-
+# bootstrap.yaml). Idempotent Job re-runs on every Argo sync.
+---
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: langfuse-system
+  annotations:
+    argocd.argoproj.io/sync-wave: '2'
+---
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: langfuse-db-bootstrap
+  namespace: database
+  annotations:
+    argocd.argoproj.io/sync-wave: '3'
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 4
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: bootstrap
+          image: pgvector/pgvector:pg16
+          env:
+            - name: PGHOST
+              value: postgresql.database.svc.cluster.local
+            - name: PGPORT
+              value: '5432'
+            - name: PGUSER
+              value: postgres
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-secrets
+                  key: postgres-password
+            - name: LF_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: langfuse-pg-bootstrap
+                  key: password
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              for i in {1..30}; do
+                if pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -q; then break; fi
+                sleep 2
+              done
+              pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER"
+
+              psql -v ON_ERROR_STOP=1 -d postgres <<SQL
+                SELECT 'CREATE DATABASE langfuse'
+                  WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'langfuse')
+                  \gexec
+
+                DO \$\$
+                BEGIN
+                  IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'langfuse') THEN
+                    CREATE ROLE langfuse WITH LOGIN PASSWORD '${LF_PASSWORD}';
+                  END IF;
+                END
+                \$\$;
+
+                ALTER USER langfuse WITH PASSWORD '${LF_PASSWORD}';
+                GRANT ALL PRIVILEGES ON DATABASE langfuse TO langfuse;
+              SQL
+
+              psql -v ON_ERROR_STOP=1 -d langfuse <<SQL
+                GRANT ALL ON SCHEMA public TO langfuse;
+                ALTER SCHEMA public OWNER TO langfuse;
+              SQL
+
+              echo "langfuse DB + user bootstrapped"

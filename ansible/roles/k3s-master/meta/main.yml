@@ -1,0 +1,35 @@
+---
+# Role metadata for k3s-master role
+
+galaxy_info:
+  role_name: k3s-master
+  author: Local AI Homelab
+  description: K3s master node installation and configuration
+  company: Local AI Homelab
+  license: MIT
+  min_ansible_version: 2.9
+  
+  platforms:
+    - name: Ubuntu
+      versions:
+        - "20.04"
+        - "22.04"
+    - name: Debian
+      versions:
+        - "11"
+        - "12"
+  
+  galaxy_tags:
+    - k3s
+    - kubernetes
+    - master
+    - control-plane
+    - homelab
+
+dependencies:
+  - role: base-system
+  - role: docker
+
+collections:
+  - kubernetes.core
+  - community.general

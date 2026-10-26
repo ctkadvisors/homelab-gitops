@@ -1,0 +1,104 @@
+# digest — the morning report, on the fleet. Replaces homelab-orchestrator's
+# daily digest (its own Node runtime on bare-metal Ollama, one LLM call per
+# topic, no tools, output to a PVC nobody opened). Now: report.py from the
+# fleet-scripts image asks the concierge (SearXNG + browser + brain) for
+# the digest and delivers it to Telegram and the brain. Topics are the
+# prompt; edit the ConfigMap to change them.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: digest-prompt
+  namespace: kagent-system
+data:
+  prompt.txt: |
+    Morning digest. For each topic below, search the web for what changed in
+    the last 7 days and write 2-4 plain sentences with the one or two links
+    that matter. Skip a topic if nothing changed and say so in a few words.
+    Plain text, no markdown headers, no bullet walls. Do not narrate your
+    plan or your tool calls. Your reply must start with the exact line
+    DIGEST
+    and contain nothing before it. This digest may use up to two searches
+    per topic; the one-lookup rule is for chat, not for this job. Topics:
+
+    1. Model Context Protocol: spec revisions, transport proposals, notable
+       server or client implementations, breaking changes.
+    2. Anthropic platform: Claude Code, the Agent SDK, API release notes.
+    3. Kata Containers and Kubernetes agent-sandboxing: releases, security
+       notes relevant to running untrusted agents in microVMs on K3s.
+    4. Local inference on NVIDIA Grace Blackwell / DGX Spark: vLLM,
+       llama.cpp, NVFP4 model releases in the 30-120B range.
+    5. This homelab: from memory, anything that failed or changed in the
+       last 24 hours (missions, alerts, backups) in three sentences.
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: digest
+  namespace: kagent-system
+  labels:
+    app: digest
+spec:
+  schedule: '0 6 * * *'
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 2400
+      ttlSecondsAfterFinished: 21600
+      template:
+        metadata:
+          labels:
+            app: digest
+        spec:
+          restartPolicy: Never
+          enableServiceLinks: false
+          nodeSelector:
+            node-type: compute-worker
+          containers:
+            - name: report
+              image: git.example.com/homelab/fleet-scripts:20260916-366f92e
+              command: ["python3", "/app/scripts/report.py"]
+              env:
+                - name: TARGET_AGENT
+                  value: concierge
+                - name: REPORT_TITLE
+                  value: Morning digest
+                - name: MAX_WAIT_SECONDS
+                  value: "1500"
+                - name: MAX_ITERATIONS
+                  value: "12"
+                - name: TELEGRAM_CHAT_ID
+                  value: "0"
+                - name: BRAIN_URL
+                  value: http://graphiti-mcp.ai-services.svc.cluster.local:8000/mcp
+              resources:
+                requests:
+                  memory: "32Mi"
+                  cpu: "10m"
+                limits:
+                  memory: "128Mi"
+                  cpu: "200m"
+              volumeMounts:
+                - name: prompt
+                  mountPath: /config
+                  readOnly: true
+                - name: telegram
+                  mountPath: /secrets/telegram
+                  readOnly: true
+                - name: brain-token
+                  mountPath: /secrets/brain
+                  readOnly: true
+          volumes:
+            - name: prompt
+              configMap:
+                name: digest-prompt
+            - name: telegram
+              secret:
+                secretName: kagent-telegram-bot-token
+            - name: brain-token
+              secret:
+                secretName: graphiti-brain-token
+                optional: true

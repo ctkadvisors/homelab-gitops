@@ -1,0 +1,19 @@
+---
+# Compute Optimization Handlers
+
+- name: reload systemd
+  systemd:
+    daemon_reload: yes
+
+- name: restart irqbalance
+  systemd:
+    name: irqbalance
+    state: restarted
+
+- name: restart cpufrequtils
+  systemd:
+    name: cpufrequtils
+    state: restarted
+    
+- name: apply sysctl
+  command: sysctl -p

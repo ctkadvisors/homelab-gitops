@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: platform
+
+resources:
+  - namespace.yaml
+  - platform-api.yaml
+  - platform-dashboard.yaml
+
+images:
+  - name: git.example.com/homelab/platform-api
+    newTag: latest
+  - name: git.example.com/homelab/platform-dashboard
+    newTag: latest

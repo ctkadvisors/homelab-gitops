@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Chris Knuteson
+#
+# kata-deploy — Kata Containers microVM runtime, managed DECLARATIVELY
+# (Chris 2026-09-01: no hand-installed helm releases in the ArgoCD-owned
+# cluster). Argo renders the upstream chart at a pinned tag; the chart's
+# job-mode dispatcher runs as a sync hook and installs the runtime on
+# exactly the nodes listed below, labeling them
+# katacontainers.io/kata-runtime=true when ready. RuntimeClasses
+# (kata-qemu, kata-clh) are created by the chart per enabled shim —
+# base/kata/runtimeclass.yaml stays a staged reference only.
+#
+# The per-node install Job restarts the node's CRI runtime (k3s agent
+# containerd) — running pods survive, but expect a brief NotReady blip
+# on first sync to a node.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kata-deploy
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: kata-deploy
+    app.kubernetes.io/part-of: local-ai-homelab
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/kata-containers/kata-containers.git
+    # Pin to the release tag; bump deliberately.
+    targetRevision: '4.1.0'
+    path: tools/packaging/kata-deploy/helm-chart/kata-deploy
+    helm:
+      releaseName: kata-deploy
+      values: |
+        k8sDistribution: k3s
+        deploymentMode: job
+        job:
+          nodes: ["elitemini2"]
+        snapshotter:
+          setup: []
+        shims:
+          disableAll: true
+          qemu:
+            enabled: true
+          clh:
+            enabled: true
+        # Chart default is qemu-runtime-rs (Rust runtime, Kata 4.0+
+        # default), which is disabled above — host-check fails unless the
+        # default is one of the enabled shims. Per-arch map. Migrating to
+        # runtime-rs shims later is upstream's recommended direction.
+        defaultShim:
+          amd64: qemu
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    # Deliberately NOT automated: syncs re-run the job-mode dispatcher
+    # hook (idempotent, but privileged node work should be a human/agent
+    # decision, not a self-heal side effect). Sync manually or via
+    # `argocd app sync kata-deploy`.
+    syncOptions:
+      - CreateNamespace=false

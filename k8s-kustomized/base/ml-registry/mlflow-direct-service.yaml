@@ -1,0 +1,23 @@
+---
+# LAN-direct MLflow endpoint (MetalLB) for large artifact transfers.
+#
+# Multi-GB weight uploads through the Traefik ingress die whenever Traefik
+# reloads (cert rotation killed two 28GB PUTs on 2026-08-05). This exposes
+# the same mlflow pods on a MetalLB IP, plain HTTP, homelab LAN only —
+# use it for scripts/publish_mlflow.py --with-weights; browsers keep using
+# https://mlflow.example.com.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow-direct
+  namespace: ml-registry
+  annotations:
+    metallb.universe.tf/loadBalancerIPs: 10.0.0.205
+spec:
+  type: LoadBalancer
+  selector:
+    app: mlflow
+  ports:
+    - name: http
+      port: 5000
+      targetPort: 5000

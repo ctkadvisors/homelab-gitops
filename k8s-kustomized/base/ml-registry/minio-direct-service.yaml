@@ -1,0 +1,20 @@
+---
+# LAN-direct MinIO S3 endpoint (MetalLB). MLflow's proxied multipart upload
+# hands clients presigned part-URLs pointing at MLFLOW_S3_ENDPOINT_URL —
+# which must therefore be reachable from BOTH cluster pods and LAN hosts
+# (the Spark publishes multi-GB weights). One address for everyone.
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-direct
+  namespace: ml-registry
+  annotations:
+    metallb.universe.tf/loadBalancerIPs: 10.0.0.206
+spec:
+  type: LoadBalancer
+  selector:
+    app: minio
+  ports:
+    - name: s3
+      port: 9000
+      targetPort: 9000

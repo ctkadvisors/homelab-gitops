@@ -1,0 +1,73 @@
+---
+# Out-of-cluster DGX Spark (GB10 Grace Blackwell, 128GB unified) inference
+# endpoint, fronted by llama-swap on the Spark, reached over Tailscale at
+# 100.64.0.69:9090.
+#
+# llama-swap exposes an OpenAI-compatible API at /v1/* and loads backends on
+# demand. Models available (see ~/inference/llama-swap/config.yaml on the box):
+#   - coder  : Qwen3-Coder-Next NVFP4 (default)             [group "big", swap]
+#   - qwen36 : Qwen3.6-35B-A3B NVFP4                       [group "big", swap]
+#   - gemma  : Gemma 4 12B                                  [group "big", swap]
+#   - embed  : Qwen3-Embedding-0.6B                         [group "always", resident]
+#
+# CONSTRAINTS (important — do not treat this as a general multi-model backend):
+#   * Only ONE "big" model is GPU-resident at a time; requesting another triggers
+#     a swap and stops the previous container to reclaim unified memory.
+#     Primary intended use is `coder` for code/agent tasks, not general chat.
+#   * Large-model cold starts can take roughly five minutes; warm inference is fast.
+#   * No TCP health probe — the backend port is down when idle by design.
+#     Always reach it through llama-swap on :9090, never probe the backend.
+#
+# Reach it in-cluster at:
+#   http://spark-llamaswap.ai-services.svc.cluster.local:9090/v1
+#
+# WHY THE LAN IP (10.0.0.69), not the tailnet IP (100.64.0.69):
+#   The Spark is directly reachable on the LAN from ALL cluster nodes (verified
+#   2026-08-29 from both elitemini and elitemini2 — the old "different L2
+#   segment" claim is stale). The tailnet IP only worked from the control-plane
+#   node (the only one running tailscaled), which silently broke every consumer
+#   scheduled on elitemini2 (prometheus scrapes included). The LAN address is
+#   DHCP but pinned in the Deco: reservation .69 <-> MAC 4c:bb:47:e8:12:50
+#   (made 2026-08-29). If the Spark's IP ever changes, update this file,
+#   qwen-coder.yaml's NetworkPolicy, and prometheus.yaml targets together.
+#
+# GOTCHA — the Endpoints object below is NOT applied by ArgoCD. ArgoCD's
+# resource.exclusions (argocd-cm) excludes kinds Endpoints + EndpointSlice
+# (groups "" and discovery.k8s.io). The Service syncs via GitOps, but the
+# Endpoints must be applied OUT OF BAND once (same as exo-mini2 / ollama-nemotron):
+#   kubectl apply -f spark-llamaswap.yaml   # on a node with cluster access
+# ArgoCD will not prune it afterward (it's excluded). Committing it here keeps
+# the desired state in Git and makes the manual apply a copy/paste.
+#
+# No consumers are wired to this yet — this only makes the Spark addressable
+# cluster-wide.
+apiVersion: v1
+kind: Service
+metadata:
+  name: spark-llamaswap
+  namespace: ai-services
+  labels:
+    app: spark-llamaswap
+    app.kubernetes.io/component: inference
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 9090
+      protocol: TCP
+      targetPort: 9090
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: spark-llamaswap
+  namespace: ai-services
+  labels:
+    app: spark-llamaswap
+subsets:
+  - addresses:
+      - ip: 10.0.0.69
+    ports:
+      - name: http
+        port: 9090
+        protocol: TCP

@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Chris Knuteson
+#
+# Langfuse — LLM observability + prompt management. Self-hosted; agents
+# fetch their system prompts from Langfuse at boot, traces stream via
+# OTel from agent-pods through the kagent-llm-gateway.
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: langfuse-production
+  annotations:
+    config.kubernetes.io/local-config: 'true'
+    description: 'Langfuse Application + DB bootstrap + IngressRoute'
+
+resources:
+  - db-bootstrap.yaml
+  - access-bootstrap.yaml
+  - application.yaml
+  - ingressroute.yaml
+
+labels:
+  - pairs:
+      environment: production
+      deployment: homelab-prod
+      component: langfuse
+
+commonAnnotations:
+  deployment.kubernetes.io/environment: 'production'

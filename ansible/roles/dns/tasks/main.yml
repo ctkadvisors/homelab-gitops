@@ -1,0 +1,47 @@
+---
+# DNS Configuration Tasks
+# Configures DNSMasq for local .homelab domain resolution
+
+- name: Install dnsmasq package
+  apt:
+    name: dnsmasq
+    state: present
+    update_cache: yes
+  become: yes
+
+- name: Create backup of original dnsmasq config
+  copy:
+    src: /etc/dnsmasq.conf
+    dest: /etc/dnsmasq.conf.original
+    remote_src: yes
+    backup: yes
+  become: yes
+  ignore_errors: yes
+
+- name: Deploy homelab DNS configuration
+  copy:
+    src: dnsmasq-localai.conf
+    dest: /etc/dnsmasq.d/localai.conf
+    owner: root
+    group: root
+    mode: '0644'
+    backup: yes
+  become: yes
+  notify: restart dnsmasq
+
+- name: Ensure dnsmasq is enabled and started
+  systemd:
+    name: dnsmasq
+    enabled: yes
+    state: started
+  become: yes
+
+- name: Verify dnsmasq configuration syntax
+  command: dnsmasq --test
+  become: yes
+  changed_when: false
+
+- name: Test DNS resolution for homelab domains
+  command: nslookup dashboard.homelab 127.0.0.1
+  changed_when: false
+  ignore_errors: yes

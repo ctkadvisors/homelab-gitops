@@ -1,0 +1,184 @@
+---
+# K3s Worker Node Configuration
+
+# K3s Worker Role
+k3s_role: "worker"
+k3s_server: false
+k3s_agent: true
+
+# K3s Worker Configuration
+k3s_worker:
+  # Installation options
+  install_options:
+    - "--node-label=node-type={{ node_type | default('worker') }}"
+    - "--node-external-ip={{ ansible_default_ipv4.address }}"
+  
+  # Server connection (will be set dynamically)
+  server_url: "https://{{ groups['k3s_masters'][0] }}:6443"
+  token_file: "/var/lib/rancher/k3s/server/node-token"
+
+# Node Labels (common to all workers)
+node_labels:
+  - "node-role.kubernetes.io/worker=true"
+  - "node-type={{ node_type | default('worker') }}"
+  - "kubernetes.io/hostname={{ inventory_hostname }}"
+
+# Node Taints (none by default)
+node_taints: []
+
+# Data Directories for Worker Nodes
+data_directories:
+  - path: "/opt/ollama-models"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0755"
+    description: "Ollama model storage"
+  
+  - path: "/opt/qdrant-data"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0755"
+    description: "Qdrant vector database data"
+    optional: true
+  
+  - path: "{{ backup.destinations[0].local }}"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0755"
+    description: "Local backup storage"
+
+# Container Runtime Configuration
+container_runtime:
+  # Docker configuration for workers
+  docker:
+    enabled: true
+    daemon_config:
+      log_driver: "json-file"
+      log_opts:
+        max_size: "10m"
+        max_file: "3"
+      storage_driver: "overlay2"
+      exec_opts:
+        - "native.cgroupdriver=systemd"
+  
+  # Containerd configuration (used by K3s)
+  containerd:
+    config_path: "/var/lib/rancher/k3s/agent/etc/containerd/config.toml"
+    
+# Resource Limits for Worker Nodes
+resource_limits:
+  # Resource allocation for Jetson nodes
+  cpu:
+    reserved: "1000m"  # Reserve 1 CPU core for system
+    available: "5000m" # 5 cores available for workloads
+  
+  memory:
+    reserved: "2Gi"   # Reserve 2GB for system
+    available: "6Gi"  # 6GB available for workloads
+  
+  storage:
+    root_reserved: "5Gi"   # Reserve space on root filesystem
+    models_available: "100Gi" # Available for AI models
+    data_available: "50Gi"    # Available for application data
+
+# Network Configuration for Workers
+network_config:
+  # Firewall rules specific to workers
+  firewall_rules:
+    - port: 10250
+      protocol: tcp
+      source: "{{ network.cluster_network }}"
+      description: "Kubelet API"
+    
+    - port: 10256
+      protocol: tcp
+      source: "{{ network.cluster_network }}"
+      description: "Kube-proxy health check"
+    
+    - port: 8472
+      protocol: udp
+      source: "{{ network.cluster_network }}"
+      description: "Flannel VXLAN"
+    
+    - port: 51820
+      protocol: udp
+      source: "{{ network.cluster_network }}"
+      description: "Flannel Wireguard"
+
+# Services Configuration for Worker Nodes
+services:
+  # Node monitoring
+  monitoring:
+    node_exporter_enabled: true
+    cadvisor_enabled: true
+    
+  # Log forwarding
+  logging:
+    enabled: true
+    forward_to_master: true
+
+# Performance Optimization
+performance:
+  # CPU governor
+  cpu_governor: "performance"
+  
+  # Swap configuration
+  swap:
+    enabled: false  # Kubernetes requirement
+    
+  # Kernel parameters
+  kernel_params:
+    - "cgroup_enable=cpuset"
+    - "cgroup_enable=memory"
+    - "cgroup_memory=1"
+
+# Backup Configuration for Workers
+backup_config:
+  # Model and data backup
+  data_backup:
+    enabled: true
+    schedule: "0 2 * * *"  # Daily at 2 AM
+    retention: 3
+    include:
+      - "/opt/ollama-models"
+      - "/opt/qdrant-data"
+  
+  # Configuration backup
+  config_backup:
+    enabled: true
+    schedule: "0 0 * * 0"  # Weekly on Sunday
+    retention: 2
+    include:
+      - "/etc/rancher/k3s"
+      - "/var/lib/rancher/k3s/agent"
+
+# Health Checks for Workers
+health_checks:
+  - name: "Kubelet Health"
+    url: "http://localhost:10248/healthz"
+    expected_status: 200
+    timeout: 10
+  
+  - name: "Container Runtime"
+    command: "docker info"
+    expected_return_code: 0
+  
+  - name: "K3s Agent Process"
+    command: "systemctl is-active k3s-agent"
+    expected_output: "active"
+
+# Maintenance Configuration
+maintenance:
+  # Automatic cleanup
+  cleanup:
+    enabled: true
+    schedule: "0 4 * * 0"  # Weekly on Sunday at 4 AM
+    tasks:
+      - "docker system prune -f"
+      - "journalctl --vacuum-time=7d"
+      - "apt autoremove -y"
+  
+  # Update strategy
+  updates:
+    enabled: false  # Manual updates for stability
+    reboot_strategy: "never"  # Avoid automatic reboots

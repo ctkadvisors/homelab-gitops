@@ -1,0 +1,193 @@
+---
+# Main tasks for k3s-master role
+
+- name: Display K3s master installation information
+  debug:
+    msg:
+      - "Installing K3s master on {{ inventory_hostname }}"
+      - "K3s version: {{ k3s_master_config.version }}"
+      - "Cluster domain: {{ k3s_master_config.cluster_domain }}"
+      - "API server will be available at: https://{{ ansible_default_ipv4.address }}:6443"
+  tags: always
+
+# Prerequisites
+- name: Create K3s directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - "{{ k3s_directories.config }}"
+    - "{{ k3s_directories.data }}"
+    - "{{ backup_config.backup_dir }}"
+  tags: k3s
+
+- name: Check if K3s is already installed
+  stat:
+    path: "{{ k3s_master_config.install_dir }}/k3s"
+  register: k3s_binary
+  tags: k3s
+
+- name: Check if K3s service is running
+  systemd:
+    name: "{{ k3s_service.name }}"
+  register: k3s_service_status
+  failed_when: false
+  tags: k3s
+
+- name: Display current K3s status
+  debug:
+    msg:
+      - "K3s binary exists: {{ k3s_binary.stat.exists }}"
+      - "K3s service status: {{ k3s_service_status.status.ActiveState | default('not found') }}"
+  tags: k3s
+
+# K3s Installation
+- name: Download K3s installation script
+  get_url:
+    url: https://get.k3s.io
+    dest: /tmp/k3s-install.sh
+    mode: '0755'
+    timeout: 30
+  when: not k3s_binary.stat.exists or k3s_service_status.status.ActiveState != "active"
+  tags: k3s
+
+- name: Install K3s master
+  shell: |
+    INSTALL_K3S_VERSION="{{ k3s_master_config.version }}" \
+    INSTALL_K3S_EXEC="server {{ k3s_master_config.extra_args | join(' ') }}" \
+    /tmp/k3s-install.sh
+  environment:
+    INSTALL_K3S_VERSION: "{{ k3s_master_config.version }}"
+    INSTALL_K3S_EXEC: "server {{ k3s_master_config.extra_args | join(' ') }}"
+  when: not k3s_binary.stat.exists or k3s_service_status.status.ActiveState != "active"
+  register: k3s_install_result
+  notify: restart k3s
+  tags: k3s
+
+- name: Wait for K3s service to be active
+  systemd:
+    name: "{{ k3s_service.name }}"
+    state: started
+    enabled: yes
+  tags: k3s
+
+- name: Wait for K3s API server to be ready
+  uri:
+    url: "{{ health_checks.api_server.url }}"
+    method: GET
+    validate_certs: no
+    status_code: 200
+  register: api_health_check
+  until: api_health_check.status == 200
+  retries: "{{ health_checks.api_server.retries }}"
+  delay: "{{ health_checks.api_server.delay }}"
+  tags: k3s
+
+# Node configuration
+- name: Wait for master node to be ready
+  shell: |
+    {{ k3s_master_config.install_dir }}/k3s kubectl get nodes {{ inventory_hostname }} -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+  register: node_ready_check
+  until: node_ready_check.stdout == "True"
+  retries: "{{ health_checks.node_ready.retries }}"
+  delay: "{{ health_checks.node_ready.delay }}"
+  tags: k3s
+
+- name: Apply node labels
+  shell: |
+    {{ k3s_master_config.install_dir }}/k3s kubectl label node {{ inventory_hostname }} {{ item }} --overwrite
+  loop: "{{ node_labels | default([]) }}"
+  tags: k3s
+
+# Kubeconfig management
+- name: Create local .kube directory
+  file:
+    path: "{{ ansible_env.HOME }}/.kube"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0755'
+  become_user: "{{ ansible_user }}"
+  tags: kubeconfig
+
+- name: Copy kubeconfig for local user
+  copy:
+    src: "{{ k3s_files.kubeconfig }}"
+    dest: "{{ kubeconfig.local_path }}"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "{{ kubeconfig.mode }}"
+    remote_src: yes
+    backup: yes
+  become_user: "{{ ansible_user }}"
+  tags: kubeconfig
+
+- name: Fetch kubeconfig to control machine
+  fetch:
+    src: "{{ k3s_files.kubeconfig }}"
+    dest: "./kubeconfig-{{ inventory_hostname }}"
+    flat: yes
+  tags: kubeconfig
+
+# Firewall configuration
+- name: Configure firewall for K3s master
+  ufw:
+    rule: allow
+    port: "{{ item.port }}"
+    proto: "{{ item.protocol }}"
+    comment: "{{ item.description }}"
+  loop: "{{ firewall_ports }}"
+  when: firewall_config.enabled | default(false)
+  tags: firewall
+
+# Backup configuration
+- name: Set up K3s backup script
+  template:
+    src: k3s-backup.sh.j2
+    dest: /usr/local/bin/k3s-backup.sh
+    owner: root
+    group: root
+    mode: '0755'
+  when: backup_config.enabled
+  tags: backup
+
+- name: Set up K3s backup cron job
+  cron:
+    name: "K3s cluster backup"
+    job: "/usr/local/bin/k3s-backup.sh"
+    minute: "0"
+    hour: "2"
+    day: "*"
+    month: "*"
+    weekday: "*"
+    user: root
+  when: backup_config.enabled
+  tags: backup
+
+# Verification
+- name: Verify K3s installation
+  shell: |
+    {{ k3s_master_config.install_dir }}/k3s --version
+  register: k3s_version_check
+  changed_when: false
+  tags: verification
+
+- name: Verify cluster status
+  shell: |
+    {{ k3s_master_config.install_dir }}/k3s kubectl get nodes
+  register: cluster_status
+  changed_when: false
+  tags: verification
+
+- name: Display K3s master installation results
+  debug:
+    msg:
+      - "K3s version: {{ k3s_version_check.stdout }}"
+      - "Cluster status:"
+      - "{{ cluster_status.stdout_lines }}"
+      - "API server: https://{{ ansible_default_ipv4.address }}:6443"
+      - "Kubeconfig: {{ kubeconfig.local_path }}"
+  tags: verification

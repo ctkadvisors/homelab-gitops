@@ -1,0 +1,108 @@
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: doc-ingester
+  namespace: ai-services
+  labels:
+    app: doc-ingester
+    component: document-processing
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: doc-ingester
+  template:
+    metadata:
+      labels:
+        app: doc-ingester
+        component: document-processing
+    spec:
+      containers:
+        - name: doc-ingester
+          image: git.example.com/homelab/doc-ingester:latest
+          ports:
+            - containerPort: 3002
+              name: http
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: PORT
+              value: "3002"
+            - name: DB_HOST
+              value: "postgresql.database.svc.cluster.local"
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              value: "doc_ingester"
+            - name: DB_USER
+              value: "doc_ingester"
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: doc-ingester-secrets
+                  key: db-password
+            - name: QDRANT_URL
+              value: "http://qdrant.vector-db.svc.cluster.local:6333"
+            - name: QDRANT_COLLECTION
+              value: "personal_docs"
+            - name: LOCALAI_URL
+              value: "http://localai.ai-services.svc.cluster.local:8080"
+            - name: EMBEDDING_MODEL
+              value: "text-embedding-ada-002"
+            - name: GMAIL_ENABLED
+              value: "false"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3002
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3002
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1001
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: "true"
+      restartPolicy: Always
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: doc-ingester
+  namespace: ai-services
+  labels:
+    app: doc-ingester
+spec:
+  type: ClusterIP
+  ports:
+    - port: 3002
+      targetPort: 3002
+      protocol: TCP
+      name: http
+  selector:
+    app: doc-ingester

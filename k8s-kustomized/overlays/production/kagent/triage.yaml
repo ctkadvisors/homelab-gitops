@@ -1,0 +1,88 @@
+# triage — the night shift's intake. Every 30 minutes: open GitHub issues
+# labeled `mission` on the allowed repos become missions (brief = title +
+# body + link) through mission-launcher, and the issue gets a comment
+# naming the Job so it is never picked twice. project_tracker's Bug Triage
+# Pipeline (analyst -> dev, queue-driven, */15 cron), rebuilt on the fleet:
+# deterministic intake here, the staged dsh pipeline does the thinking,
+# pr-reviewer judges the result. Opt-in by label, on purpose.
+#
+# Credentials: only the git token (to read issues and comment). No model.
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: triage
+  namespace: kagent-system
+  labels:
+    app: triage
+spec:
+  # Hourly fallback since 2026-09-03: fleet-hooks triages on issue events.
+  schedule: '37 * * * *'
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 1800
+      template:
+        metadata:
+          labels:
+            app: triage
+        spec:
+          restartPolicy: Never
+          enableServiceLinks: false
+          nodeSelector:
+            node-type: compute-worker
+          containers:
+          - name: triage
+            image: git.example.com/homelab/fleet-scripts:20260916-366f92e
+            command:
+            - python3
+            - /app/scripts/triage.py
+            resources:
+              requests:
+                memory: 32Mi
+                cpu: 10m
+              limits:
+                memory: 128Mi
+                cpu: 200m
+            volumeMounts:
+            - name: git-token
+              mountPath: /secrets/git
+              readOnly: true
+            - name: github-app
+              mountPath: /secrets/github-app
+              readOnly: true
+          volumes:
+          - name: git-token
+            secret:
+              secretName: kagent-builder-git-token
+          - name: github-app
+            secret:
+              secretName: github-app
+              optional: true
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mission-launcher-ingress-triage
+  namespace: kagent-system
+spec:
+  podSelector:
+    matchLabels:
+      app: mission-launcher
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: triage
+    - podSelector:
+        matchLabels:
+          app: fleet-hooks
+    ports:
+    - protocol: TCP
+      port: 8080

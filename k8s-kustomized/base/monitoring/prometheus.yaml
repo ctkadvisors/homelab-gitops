@@ -1,0 +1,482 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: monitoring
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 30s
+      evaluation_interval: 30s
+      external_labels:
+        cluster: 'homelab'
+        replica: 'prometheus'
+
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets:
+              - alertmanager:9093
+
+    rule_files:
+      - "/etc/prometheus/alerts.yml"
+
+    scrape_configs:
+      # Prometheus itself
+      - job_name: 'prometheus'
+        static_configs:
+          - targets: ['localhost:9090']
+
+      # Kubernetes API server
+      - job_name: 'kubernetes-apiservers'
+        kubernetes_sd_configs:
+          - role: endpoints
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+            action: keep
+            regex: default;kubernetes;https
+
+      # Kubernetes nodes
+      - job_name: 'kubernetes-nodes'
+        kubernetes_sd_configs:
+          - role: node
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          insecure_skip_verify: true
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        relabel_configs:
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+
+      # Kubernetes pods
+      - job_name: 'kubernetes-pods'
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: true
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          - action: labelmap
+            regex: __meta_kubernetes_pod_label_(.+)
+          - source_labels: [__meta_kubernetes_namespace]
+            action: replace
+            target_label: kubernetes_namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            action: replace
+            target_label: kubernetes_pod_name
+
+      # Node Exporter
+      - job_name: 'node-exporter'
+        kubernetes_sd_configs:
+          - role: endpoints
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_endpoints_name]
+            action: keep
+            regex: node-exporter
+          - source_labels: [__meta_kubernetes_endpoint_port_name]
+            action: keep
+            regex: metrics
+
+      # Kube State Metrics
+      - job_name: 'kube-state-metrics'
+        static_configs:
+          - targets: ['kube-state-metrics:8080']
+
+      # Jetson GPU metrics from tegrastats exporter (k8s DaemonSet).
+      # jetson1 removed 2026-08-05: off-cluster since April, nothing
+      # listens on 9101 there — its node metrics come from
+      # node-exporter-external below.
+      - job_name: 'jetson-gpu'
+        static_configs:
+          - targets: ['10.0.0.75:9101']
+            labels:
+              node: jetson2
+        scrape_interval: 30s
+        metrics_path: /metrics
+
+      # Bare-metal node_exporter on hosts outside k8s (installed by
+      # ansible/roles/nemotron-host; apt metrics via os-updates.yml).
+      - job_name: 'node-exporter-external'
+        static_configs:
+          - targets: ['10.0.0.73:9100']
+            labels:
+              node: jetson1
+
+      # Ollama AI inference metrics
+      - job_name: 'ollama-metrics'
+        static_configs:
+          - targets: ['ollama-metrics-exporter:9090']
+        scrape_interval: 30s
+        metrics_path: /metrics
+
+      # DGX Spark inference router and always-resident embedding backend.
+      # Swappable large-model ports are intentionally not scraped because being
+      # down while idle is expected and frees unified memory.
+      - job_name: 'spark-llamaswap'
+        static_configs:
+          - targets: ['10.0.0.69:9090']
+            labels:
+              node: spark
+        scrape_interval: 15s
+        metrics_path: /metrics
+
+      - job_name: 'spark-embedding'
+        static_configs:
+          - targets: ['10.0.0.69:8201']
+            labels:
+              node: spark
+              model_role: embedding
+        scrape_interval: 15s
+        metrics_path: /metrics
+
+      # AlertManager
+      - job_name: 'alertmanager'
+        static_configs:
+          - targets: ['alertmanager:9093']
+
+      # Grafana
+      - job_name: 'grafana'
+        static_configs:
+          - targets: ['grafana:3000']
+
+  alerts.yml: |
+    groups:
+      - name: kubernetes-alerts
+        rules:
+          - alert: KubernetesNodeReady
+            expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+            for: 10m
+            labels:
+              severity: critical
+            annotations:
+              summary: Kubernetes Node ready (instance {{ $labels.instance }})
+              description: "Node {{ $labels.node }} has been unready for a long time"
+
+          - alert: KubernetesMemoryPressure
+            expr: kube_node_status_condition{condition="MemoryPressure",status="true"} == 1
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: Kubernetes memory pressure (instance {{ $labels.instance }})
+              description: "Node {{ $labels.node }} has MemoryPressure condition"
+
+          - alert: KubernetesPodCrashLooping
+            expr: increase(kube_pod_container_status_restarts_total[1m]) > 3
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: Kubernetes pod crash looping (instance {{ $labels.instance }})
+              description: "Pod {{ $labels.pod }} is crash looping"
+
+          - alert: KubernetesPodNotHealthy
+            # A pod whose init containers are still running is working, not
+            # unhealthy: improve-daily runs its five model stages as
+            # sequential initContainers for up to an hour and sat in
+            # Pending the whole time (false critical, 2026-09-02).
+            # Pods owned by Jobs are excluded too: a Job's failed attempt
+            # stays in Failed until TTL cleanup and paged every 30 min all
+            # night (triage + backup, 2026-09-02/03). Jobs get their own
+            # rule below that resolves when the Job is cleaned up.
+            # arc-runners is excluded: CI runner pods are ephemeral, a Kata
+            # sandbox start sometimes hangs (2026-09-09: three in an evening,
+            # each a new alert in the group, a 4096-char Telegram message every
+            # 5 minutes) and fleet-reconcile deletes a runner Pending > 20 min
+            # itself; CiRunnerStuck below pages only when that did not work.
+            expr: (min_over_time(sum by (namespace, pod) (kube_pod_status_phase{phase=~"Pending|Unknown|Failed", namespace!="arc-runners"})[15m:1m]) > 0) unless on (namespace, pod) (sum by (namespace, pod) (kube_pod_init_container_status_running) > 0) unless on (namespace, pod) (kube_pod_owner{owner_kind="Job"})
+            for: 0m
+            labels:
+              severity: critical
+            annotations:
+              summary: Kubernetes Pod not healthy (instance {{ $labels.instance }})
+              description: "Pod has been in a non-running state for longer than 15 minutes."
+
+          - alert: CiRunnerStuck
+            expr: kube_pod_status_phase{namespace="arc-runners", phase="Pending"} == 1
+            for: 40m
+            labels:
+              severity: warning
+            annotations:
+              summary: CI runner {{ $labels.pod }} Pending for 40 minutes
+              description: "A Kata sandbox start hung and fleet-reconcile did not clear it. Delete the pod; ARC replaces it in seconds."
+
+          - alert: KubernetesJobFailed
+            # One warning per failed Job (not per attempt pod); clears when the
+            # Job is deleted or its TTL reaps it. ml-registry has its own rule.
+            expr: kube_job_status_failed{namespace!="ml-registry"} > 0
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: Kubernetes Job failed ({{ $labels.namespace }}/{{ $labels.job_name }})
+              description: "Job {{ $labels.job_name }} has a failed attempt. Check its pod logs; the Job is reaped by ttlSecondsAfterFinished."
+
+      - name: node-alerts
+        rules:
+          - alert: HostOutOfMemory
+            expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes * 100 < 10
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: Host out of memory (instance {{ $labels.instance }})
+              description: "Node memory is filling up (< 10% left)"
+
+          - alert: HostHighCpuLoad
+            expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[2m])) * 100) > 80
+            for: 0m
+            labels:
+              severity: warning
+            annotations:
+              summary: Host high CPU load (instance {{ $labels.instance }})
+              description: "CPU load is > 80%"
+
+          - alert: HostOutOfDiskSpace
+            expr: (node_filesystem_avail_bytes * 100) / node_filesystem_size_bytes < 10 and ON (instance, device, mountpoint) node_filesystem_readonly == 0
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: Host out of disk space (instance {{ $labels.instance }})
+              description: "Disk is almost full (< 10% left)"
+
+      - name: spark-inference-alerts
+        rules:
+          - alert: SparkLlamaSwapUnavailable
+            expr: up{job="spark-llamaswap"} == 0
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: DGX Spark inference router is unavailable
+              description: "Prometheus cannot scrape llama-swap on the Spark for 2 minutes."
+
+          - alert: SparkEmbeddingUnavailable
+            expr: up{job="spark-embedding"} == 0
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: DGX Spark embedding backend is unavailable
+              description: "The always-resident embedding backend has been unavailable for 2 minutes."
+
+          - alert: SparkGpuTemperatureHigh
+            expr: llamaswap_gpu_temperature_celsius{job="spark-llamaswap"} > 85
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: DGX Spark GPU temperature is high
+              description: "Spark GPU temperature has exceeded 85C for 5 minutes."
+
+      - name: tls-certificates
+        rules:
+          - alert: WildcardCertExpiringSoon
+            expr: min(certmanager_certificate_expiration_timestamp_seconds{exported_namespace="ingress-system",name="example-tls"}) - time() < 21 * 24 * 3600
+            for: 1h
+            labels:
+              severity: warning
+            annotations:
+              summary: example.com wildcard expires in under 21 days
+              description: "cert-manager renews at ~30 days out; if this fires, renewal is not happening. Runbook: docs/runbooks/tls-wildcard.md (cert-medic should have already tried)."
+          - alert: WildcardCertExpiryCritical
+            expr: min(certmanager_certificate_expiration_timestamp_seconds{exported_namespace="ingress-system",name="example-tls"}) - time() < 7 * 24 * 3600
+            for: 30m
+            labels:
+              severity: critical
+            annotations:
+              summary: example.com wildcard expires in under 7 DAYS
+              description: "Renewal and cert-medic have both failed. Manual intervention required: docs/runbooks/tls-wildcard.md"
+          - alert: CertificateNotReady
+            expr: certmanager_certificate_ready_status{condition="False"} == 1
+            for: 6h
+            labels:
+              severity: warning
+            annotations:
+              summary: "cert-manager Certificate {{ $labels.name }} not Ready for 6h"
+              description: "A Certificate has been failing to issue/renew for 6+ hours (namespace {{ $labels.exported_namespace }})."
+
+      - name: os-hygiene
+        rules:
+          - alert: HostSecurityUpdatesStuck
+            expr: apt_security_upgrades_pending > 0
+            for: 48h
+            labels:
+              severity: warning
+            annotations:
+              summary: "{{ $labels.instance }} has security updates pending >48h"
+              description: "unattended-upgrades applies security patches daily; pending for 2+ days means it is broken or the package is held. Run: cd ansible && ansible-playbook playbooks/os-updates.yml"
+          - alert: HostRebootRequired
+            expr: node_reboot_required == 1
+            for: 48h
+            labels:
+              severity: warning
+            annotations:
+              summary: "{{ $labels.instance }} needs a reboot (pending >48h)"
+              description: "Kernel/libc update wants a reboot. Stagger: workers first, control-plane last, one node at a time."
+
+      - name: backup-alerts
+        rules:
+          - alert: WeightsBackupStale
+            expr: time() - kube_cronjob_status_last_successful_time{cronjob="minio-spark-backup"} > 36 * 3600
+            for: 1h
+            labels:
+              severity: warning
+            annotations:
+              summary: MinIO->Spark weights backup is stale (>36h since last success)
+              description: "The nightly minio-spark-backup CronJob (ml-registry) has not succeeded in over 36 hours. The Spark copy of the tolkien-27b weights is stale. Check: kubectl logs -n ml-registry job/<latest minio-spark-backup job>."
+          - alert: WeightsBackupJobFailed
+            expr: kube_job_status_failed{namespace="ml-registry",job_name=~"minio-spark-backup.*"} > 0
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: MinIO->Spark weights backup job failed
+              description: "A minio-spark-backup Job has failed pods. Covers the window before first-ever success (staleness metric absent until then)."
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus
+rules:
+  - apiGroups: [""]
+    resources:
+      - nodes
+      - nodes/proxy
+      - services
+      - endpoints
+      - pods
+    verbs: ["get", "list", "watch"]
+  - apiGroups:
+      - extensions
+    resources:
+      - ingresses
+    verbs: ["get", "list", "watch"]
+  - nonResourceURLs: ["/metrics"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: monitoring
+# Prometheus storage will use hostPath volume instead of PVC
+# This is configured in the deployment volumeMounts section
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: monitoring
+  labels:
+    app: prometheus
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # Avoid storage conflicts with hostPath volumes
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      serviceAccountName: prometheus
+      nodeSelector:
+        node-type: control-plane
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.48.0
+          args:
+            - "--config.file=/etc/prometheus/prometheus.yml"
+            - "--storage.tsdb.path=/prometheus/"
+            - "--web.console.libraries=/etc/prometheus/console_libraries"
+            - "--web.console.templates=/etc/prometheus/consoles"
+            - "--storage.tsdb.retention.time=30d"
+            - "--web.enable-lifecycle"
+            - "--web.enable-admin-api"
+          ports:
+            - containerPort: 9090
+              name: web
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "200m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+          volumeMounts:
+            - name: prometheus-config-volume
+              mountPath: /etc/prometheus/
+            - name: prometheus-storage-volume
+              mountPath: /prometheus/
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 9090
+            initialDelaySeconds: 30
+            timeoutSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9090
+            initialDelaySeconds: 30
+            timeoutSeconds: 30
+      volumes:
+        - name: prometheus-config-volume
+          configMap:
+            defaultMode: 420
+            name: prometheus-config
+        - name: prometheus-storage-volume
+          hostPath:
+            path: /opt/prometheus-data
+            type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: monitoring
+  labels:
+    app: prometheus
+spec:
+  selector:
+    app: prometheus
+  ports:
+    - name: web
+      port: 9090
+      targetPort: 9090
+  type: ClusterIP

@@ -1,0 +1,160 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Chris Knuteson
+#
+# homelab-builder — spawned exclusively as a child of operator-investigator
+# via spawn_child_task (see operator-investigator-agent.yaml's
+# allowedChildAgents). Never bound directly to a Channel. Has shell.exec
+# (SSH to elitemini2/jetson2 as the low-priv kagent-builder OS user, see
+# docs/runbooks/kagent-builder-node-setup.md) plus code/browser tools, and
+# can push straight to main for GitOps changes.
+---
+apiVersion: kagent.example.com/v1alpha1
+kind: Agent
+metadata:
+  name: homelab-builder
+  namespace: kagent-system
+  annotations:
+    argocd.argoproj.io/sync-wave: '8'
+  labels:
+    kagent.example.com/role: builder
+    kagent.example.com/tenant: homelab
+spec:
+  agentType: homelab-builder
+  toolProfileRef: builder-shell
+  modelClass: tool-caller-spark-qwen
+  llmParams:
+    temperature: 0
+    maxTokens: 8000   # 1800 with hidden reasoning left nothing for the answer (2026-09-09)
+    extraBody:
+      chat_template_kwargs:
+        enable_thinking: false
+  # CRD requires >=1; homelab-builder has no allowedChildAgents of its
+  # own, so spawn_child_task fails closed regardless of this value --
+  # it's moot, just needs to be a valid minimum.
+  maxConcurrentChildren: 1
+  maxRestarts: 0
+  sandboxProfile: default
+  supervisionStrategy: one_for_one
+  systemPrompt: |
+    You are the homelab-builder agent. You were spawned by
+    operator-investigator because a request needs real execution: writing
+    code, running shell commands on elitemini2 or jetson2, building/pushing
+    container images, or pushing GitOps changes to this cluster's config
+    repo (ctkadvisors/new_localai, main branch -- push directly, no PR
+    needed).
+
+    Tools:
+    - shell.exec(host, command, timeoutSeconds?) -- host must be exactly
+      "elitemini2" or "jetson2". You are a low-privilege user with no
+      sudo; do not attempt sudo, it will not work. Note: elitemini2's
+      kagent-builder account is not yet provisioned as of this writing --
+      only jetson2 is currently reachable.
+    - code_interpreter.execute_code -- JavaScript only for local scratch
+      work before pushing.
+    - browser.* -- for reading docs/dashboards if needed.
+
+    Discipline:
+    - State your plan in one or two sentences before executing it.
+    - Prefer a small number of larger shell.exec calls over many tiny ones.
+    - If a command fails, read stderr and adjust -- don't repeat the exact
+      same failing command.
+    - When done, report concretely what you did: commands run, exit codes,
+      files changed, what was pushed and to where.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: homelab-builder-egress
+  namespace: kagent-system
+  labels:
+    kagent.example.com/role: builder
+spec:
+  podSelector:
+    matchLabels:
+      kagent.example.com/agent: homelab-builder
+  policyTypes:
+    - Egress
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Kubernetes API for AgentTask status/result patches. Keep the
+    # port-only shape: this mirrors the existing workbench policy and
+    # works with the apiserver ClusterIP service path.
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+    # In-cluster LLM gateway (same as every other agent-pod).
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: llm-gateway
+      ports:
+        - protocol: TCP
+          port: 4000
+    # kagent template/JWKS server used by agent-pod bootstrapping.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: operator
+              app.kubernetes.io/name: kagent-operator
+      ports:
+        - protocol: TCP
+          port: 8085
+    # Tool dispatch target for browser/code/shell runtime tools.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: tool-gateway
+              app.kubernetes.io/name: kagent-operator
+      ports:
+        - protocol: TCP
+          port: 8080
+    # Langfuse prompt fetch + OTLP trace export.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: langfuse-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: web
+              app.kubernetes.io/name: langfuse
+      ports:
+        - protocol: TCP
+          port: 3000
+    # SSH to elitemini2 and jetson2 only -- not a broader CIDR, not the
+    # control-plane node.
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.74/32
+        - ipBlock:
+            cidr: 10.0.0.75/32
+      ports:
+        - protocol: TCP
+          port: 22
+    # git push target: GitHub (this infra repo).
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+    # git push target: self-hosted Gitea (generated-project repos).
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.76/32
+      ports:
+        - protocol: TCP
+          port: 3000
+        - protocol: TCP
+          port: 22

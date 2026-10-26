@@ -1,0 +1,106 @@
+---
+# Compute Optimization Role Defaults
+# Performance optimizations for high-performance x86_64 compute workers
+
+# Performance Configuration
+performance_config:
+  cpu_governor: "performance"
+  scaling_governor: "performance"
+  turbo_boost: true
+  cpu_freq_min: "1000000"  # 1 GHz minimum
+  cpu_freq_max: "5000000"  # 5 GHz maximum (will use actual max)
+
+# System Optimizations
+system_optimizations:
+  # Memory management
+  vm_swappiness: 10
+  vm_dirty_ratio: 15
+  vm_dirty_background_ratio: 5
+  vm_vfs_cache_pressure: 50
+  
+  # Network optimizations
+  net_core_rmem_max: 134217728
+  net_core_wmem_max: 134217728
+  net_core_netdev_max_backlog: 5000
+  net_ipv4_tcp_congestion_control: "bbr"
+  net_ipv4_tcp_window_scaling: 1
+  
+  # File system optimizations
+  fs_file_max: 2097152
+  fs_nr_open: 1048576
+
+# AMD GPU Configuration
+amd_gpu_config:
+  enabled: "{{ gpu_enabled | default(false) }}"
+  rocm_enabled: true
+  rocm_packages:
+    - "rocm-dev"
+    - "rocm-libs"
+    - "rocm-utils"
+    - "rocm-cmake"
+  
+  # GPU memory settings
+  gpu_memory_fraction: 0.8
+  
+  # ROCm environment variables
+  rocm_env_vars:
+    HSA_OVERRIDE_GFX_VERSION: "10.3.0"
+    ROCM_PATH: "/opt/rocm"
+    HIP_VISIBLE_DEVICES: "0"
+
+# Data Directories
+data_directories:
+  - path: "/opt/monitoring-data"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0755"
+  - path: "/opt/automation-data"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0755"
+  - path: "/opt/vector-db-data"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0755"
+  - path: "/opt/backup-data"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0755"
+
+# Service Configuration
+services_config:
+  # Enable systemd services for performance
+  enable_services:
+    - "irqbalance"
+    - "cpufrequtils"
+  
+  # Disable unnecessary services
+  disable_services:
+    - "bluetooth"
+    - "cups"
+    - "avahi-daemon"
+
+# Monitoring Configuration
+monitoring_config:
+  node_exporter_enabled: true
+  node_exporter_port: 9100
+  
+  # Custom metrics
+  custom_metrics:
+    - "amd_gpu_temperature"
+    - "cpu_frequency"
+    - "memory_bandwidth"
+
+# Security Configuration
+security_config:
+  # Firewall rules for compute services
+  firewall_rules:
+    - port: 9100
+      protocol: tcp
+      description: "Node Exporter"
+    - port: 6333
+      protocol: tcp
+      description: "Qdrant API"
+    - port: 6334
+      protocol: tcp
+      description: "Qdrant gRPC"

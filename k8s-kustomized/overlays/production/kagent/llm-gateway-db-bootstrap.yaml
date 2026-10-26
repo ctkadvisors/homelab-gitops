@@ -1,0 +1,125 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Chris Knuteson
+#
+# kagent-llm-gateway database bootstrap — uses the EXISTING shared
+# postgres in the database namespace (pgvector/pgvector:pg16, 324
+# days uptime) instead of bundling a new in-cluster Postgres for the
+# gateway. Same pattern other homelab apps (n8n, etc.) follow.
+#
+# Sync wave 3 — runs BEFORE the gateway Application (wave 5) so the
+# DSN Secret exists when the gateway pod boots.
+#
+# The Job is idempotent: CREATE DATABASE / USER use IF NOT EXISTS;
+# the password is force-set on every run so it stays in sync with
+# the committed Secret. Re-runs on every Argo sync are harmless.
+---
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kagent-system
+  annotations:
+    argocd.argoproj.io/sync-wave: '2'
+---
+
+# Bootstrap Job — runs in the database namespace where the postgres
+# superuser secret lives. Creates the gateway's DB + role + grants
+# (idempotent) and re-aligns the password to the bootstrap Secret.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kagent-llm-gateway-db-bootstrap
+  namespace: database
+  annotations:
+    # Wave 3 — after secrets (2), before gateway Application (5).
+    argocd.argoproj.io/sync-wave: '3'
+    # Re-run on every Argo sync so password resets stay in lockstep
+    # with the committed Secret. Job is idempotent; a re-run is a
+    # no-op if nothing changed.
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 4
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: bootstrap
+          # Same image the existing postgres uses — guaranteed psql
+          # client + pg_isready in the path.
+          image: pgvector/pgvector:pg16
+          env:
+            - name: PGHOST
+              value: postgresql.database.svc.cluster.local
+            - name: PGPORT
+              value: '5432'
+            - name: PGUSER
+              value: postgres
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-secrets
+                  key: postgres-password
+            - name: GATEWAY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: kagent-llm-gateway-pg-bootstrap
+                  key: password
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              # Wait for postgres to be reachable.
+              for i in {1..30}; do
+                if pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -q; then break; fi
+                sleep 2
+              done
+              pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER"
+
+              # CREATE DATABASE is not transactional — guard with a
+              # SELECT FROM pg_database. CREATE USER similarly idempotent.
+              psql -v ON_ERROR_STOP=1 -d postgres <<SQL
+                SELECT 'CREATE DATABASE kagent_llm_gateway'
+                  WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'kagent_llm_gateway')
+                  \gexec
+
+                DO \$\$
+                BEGIN
+                  IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'kagent_gateway') THEN
+                    CREATE ROLE kagent_gateway WITH LOGIN PASSWORD '${GATEWAY_PASSWORD}';
+                  END IF;
+                END
+                \$\$;
+
+                ALTER USER kagent_gateway WITH PASSWORD '${GATEWAY_PASSWORD}';
+                GRANT ALL PRIVILEGES ON DATABASE kagent_llm_gateway TO kagent_gateway;
+              SQL
+
+              # Grant schema-level perms inside the new DB so migrations can DDL.
+              psql -v ON_ERROR_STOP=1 -d kagent_llm_gateway <<SQL
+                GRANT ALL ON SCHEMA public TO kagent_gateway;
+                ALTER SCHEMA public OWNER TO kagent_gateway;
+              SQL
+
+              # Seed the kagent operator's API key in api_keys (idempotent).
+              # The token in kagent-llm-gateway-token Secret is the OPERATOR's
+              # bearer for /v1/chat/completions; the gateway looks it up by
+              # SHA-256 hash. Wait for the migrations Job (run by Helm hook
+              # after this) to create the api_keys table — but since we run
+              # before the gateway Application's sync wave 5, the table won't
+              # exist yet. Loop until it appears.
+              for i in {1..30}; do
+                if psql -d kagent_llm_gateway -tAc "SELECT to_regclass('public.api_keys')" | grep -q "api_keys"; then break; fi
+                sleep 2
+              done
+              psql -v ON_ERROR_STOP=1 -d kagent_llm_gateway <<SQL
+                INSERT INTO api_keys (key_hash, key_prefix, name, status)
+                VALUES ('83c8d020f66e563f98440f84b0dd48d9f6f0c26244b67fc780a1093bb70fd644',
+                        'sk-kagent-',
+                        'kagent-operator',
+                        'active')
+                ON CONFLICT (key_hash) DO UPDATE SET status = 'active';
+              SQL
+
+              echo "kagent-llm-gateway DB + user + operator key bootstrapped"

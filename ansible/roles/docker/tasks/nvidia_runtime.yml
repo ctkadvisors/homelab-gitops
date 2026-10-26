@@ -1,0 +1,127 @@
+---
+# NVIDIA Container Runtime installation tasks
+
+- name: Display NVIDIA runtime installation info
+  debug:
+    msg:
+      - "Installing NVIDIA Container Runtime on {{ inventory_hostname }}"
+      - "This enables GPU access in containers"
+  tags: nvidia
+
+# Prerequisites for NVIDIA runtime
+- name: Check if NVIDIA GPU is present
+  command: nvidia-smi
+  register: nvidia_smi_check
+  failed_when: false
+  changed_when: false
+  tags: nvidia
+
+- name: Fail if no NVIDIA GPU detected
+  fail:
+    msg: "No NVIDIA GPU detected on this system. NVIDIA runtime installation aborted."
+  when: nvidia_smi_check.rc != 0
+  tags: nvidia
+
+# NVIDIA Container Toolkit Repository
+- name: Add NVIDIA Container Toolkit GPG key
+  apt_key:
+    url: "{{ nvidia_runtime.repo.gpg_key }}"
+    state: present
+  tags: nvidia
+
+- name: Get distribution information for NVIDIA repo
+  shell: |
+    . /etc/os-release
+    echo $ID$VERSION_ID
+  register: nvidia_distro
+  changed_when: false
+  tags: nvidia
+
+- name: Add NVIDIA Container Toolkit repository
+  apt_repository:
+    repo: "deb {{ nvidia_runtime.repo.url }}/{{ nvidia_distro.stdout }}/libnvidia-container.list"
+    state: present
+    update_cache: yes
+  tags: nvidia
+
+# NVIDIA Container Toolkit Installation
+- name: Install NVIDIA Container Toolkit
+  apt:
+    name:
+      - nvidia-container-toolkit
+      - nvidia-container-runtime
+    state: "{{ 'latest' if nvidia_runtime.version == 'latest' else 'present' }}"
+    update_cache: yes
+  notify: restart docker
+  tags: nvidia
+
+# Configure NVIDIA runtime for Docker
+- name: Configure NVIDIA runtime for Docker
+  command: nvidia-ctk runtime configure --runtime=docker
+  notify: restart docker
+  tags: nvidia
+
+# Update Docker daemon configuration for NVIDIA
+- name: Read current Docker daemon configuration
+  slurp:
+    src: /etc/docker/daemon.json
+  register: docker_daemon_config
+  tags: nvidia
+
+- name: Parse Docker daemon configuration
+  set_fact:
+    docker_config: "{{ docker_daemon_config.content | b64decode | from_json }}"
+  tags: nvidia
+
+- name: Update Docker daemon configuration with NVIDIA runtime
+  set_fact:
+    docker_config: "{{ docker_config | combine(nvidia_runtime.runtime_config, recursive=true) }}"
+  tags: nvidia
+
+- name: Write updated Docker daemon configuration
+  copy:
+    content: "{{ docker_config | to_nice_json }}"
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: '0644'
+    backup: yes
+  notify: restart docker
+  tags: nvidia
+
+# Verification
+- name: Verify NVIDIA Container Runtime installation
+  command: nvidia-ctk --version
+  register: nvidia_ctk_version
+  changed_when: false
+  tags: nvidia
+
+- name: Test NVIDIA runtime with Docker
+  docker_container:
+    name: nvidia_test
+    image: nvidia/cuda:11.8-base-ubuntu20.04
+    command: nvidia-smi
+    state: started
+    auto_remove: yes
+    detach: no
+    runtime: nvidia
+  become_user: "{{ ansible_user }}"
+  register: nvidia_test_result
+  tags: nvidia
+
+- name: Display NVIDIA runtime installation results
+  debug:
+    msg:
+      - "NVIDIA Container Toolkit version: {{ nvidia_ctk_version.stdout }}"
+      - "NVIDIA runtime test: {{ 'PASSED' if nvidia_test_result is succeeded else 'FAILED' }}"
+      - "GPU access in containers: ENABLED"
+  tags: nvidia
+
+- name: Create NVIDIA runtime info file
+  template:
+    src: nvidia-info.j2
+    dest: /etc/ansible/nvidia-runtime-info
+    owner: root
+    group: root
+    mode: '0644'
+  tags: nvidia

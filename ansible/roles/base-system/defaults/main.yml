@@ -1,0 +1,182 @@
+---
+# Default variables for base-system role
+
+# System Configuration
+base_system:
+  # User configuration
+  user: "{{ ansible_user }}"
+  group: "{{ ansible_user }}"
+  
+  # Timezone and locale
+  timezone: "{{ timezone | default('UTC') }}"
+  locale: "{{ locale | default('en_US.UTF-8') }}"
+  
+  # Package management
+  update_cache: "{{ package_update_cache | default(true) }}"
+  upgrade_packages: "{{ package_upgrade | default(false) }}"
+  
+  # Essential packages
+  packages: "{{ essential_packages | default([]) }}"
+  
+  # Additional packages for homelab
+  additional_packages:
+    - avahi-daemon
+    - avahi-utils
+    - dnsmasq
+    - nfs-common
+    - rsync
+    - fail2ban
+    - ufw
+    - chrony
+    - logrotate
+    - cron
+
+# SSH Configuration
+ssh_config:
+  enabled: true
+  port: 22
+  password_auth: "{{ security.ssh.password_authentication | default(false) }}"
+  root_login: "{{ security.ssh.permit_root_login | default(false) }}"
+  max_auth_tries: "{{ security.ssh.max_auth_tries | default(3) }}"
+  client_alive_interval: "{{ security.ssh.client_alive_interval | default(300) }}"
+
+# Firewall Configuration
+firewall_config:
+  enabled: "{{ security.firewall.enabled | default(false) }}"
+  default_policy: "{{ security.firewall.default_policy | default('deny') }}"
+  allowed_ports: "{{ security.firewall.allowed_ports | default(['22']) }}"
+
+# System Services
+system_services:
+  enabled:
+    - ssh
+    - chrony
+    - avahi-daemon
+    - cron
+    - rsyslog
+  disabled:
+    - snapd  # Disable snap for better performance
+    - bluetooth  # Usually not needed on servers
+  
+# Performance Tuning
+performance_tuning:
+  enabled: true
+  
+  # Swap configuration
+  swap:
+    enabled: false  # Kubernetes requirement
+    swappiness: 1
+  
+  # Kernel parameters
+  sysctl_params:
+    # Network optimizations
+    net.core.rmem_max: 134217728
+    net.core.wmem_max: 134217728
+    net.ipv4.tcp_rmem: "4096 65536 134217728"
+    net.ipv4.tcp_wmem: "4096 65536 134217728"
+    net.ipv4.tcp_congestion_control: "bbr"
+    
+    # Memory management
+    vm.swappiness: 1
+    vm.dirty_ratio: 15
+    vm.dirty_background_ratio: 5
+    
+    # File system
+    fs.file-max: 2097152
+    fs.inotify.max_user_watches: 524288
+    
+    # Kubernetes optimizations
+    net.bridge.bridge-nf-call-iptables: 1
+    net.bridge.bridge-nf-call-ip6tables: 1
+    net.ipv4.ip_forward: 1
+
+# Log Management
+log_management:
+  enabled: true
+  
+  # Log rotation
+  logrotate:
+    enabled: true
+    configs:
+      - name: "syslog"
+        path: "/var/log/syslog"
+        options:
+          - "daily"
+          - "missingok"
+          - "rotate 7"
+          - "compress"
+          - "delaycompress"
+          - "notifempty"
+  
+  # Journal configuration
+  journald:
+    max_use: "100M"
+    max_file_size: "10M"
+    max_retention_sec: "1week"
+
+# Directory Structure
+directories:
+  create:
+    - path: "/opt"
+      owner: "root"
+      group: "root"
+      mode: "0755"
+    - path: "/opt/backups"
+      owner: "{{ base_system.user }}"
+      group: "{{ base_system.group }}"
+      mode: "0755"
+    - path: "/opt/ssl-certs"
+      owner: "root"
+      group: "root"
+      mode: "0755"
+    - path: "/etc/ansible"
+      owner: "root"
+      group: "root"
+      mode: "0755"
+
+# Cron Jobs
+cron_jobs:
+  - name: "System cleanup"
+    job: "/usr/bin/find /tmp -type f -atime +7 -delete"
+    minute: "0"
+    hour: "3"
+    day: "*"
+    month: "*"
+    weekday: "0"
+    user: "root"
+  
+  - name: "Log cleanup"
+    job: "/usr/bin/journalctl --vacuum-time=7d"
+    minute: "30"
+    hour: "3"
+    day: "*"
+    month: "*"
+    weekday: "0"
+    user: "root"
+
+# Security Hardening
+security_hardening:
+  enabled: true
+  
+  # File permissions
+  secure_files:
+    - path: "/etc/ssh/sshd_config"
+      owner: "root"
+      group: "root"
+      mode: "0600"
+    - path: "/etc/sudoers"
+      owner: "root"
+      group: "root"
+      mode: "0440"
+  
+  # Remove unnecessary packages
+  remove_packages:
+    - telnet
+    - rsh-client
+    - rsh-redone-client
+  
+  # Disable unnecessary services
+  disable_services:
+    - telnet
+    - rsh
+    - rlogin

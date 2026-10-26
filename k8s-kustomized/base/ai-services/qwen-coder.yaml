@@ -1,0 +1,188 @@
+---
+# Qwen Coder worker — hosts the guarded harness and routes inference to Spark.
+# Spark is reachable only from the control-plane node over tailnet.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qwen-coder-config
+  namespace: ai-services
+  labels:
+    app: qwen-coder
+data:
+  SPARK_BASE_URL: "http://spark-llamaswap.ai-services.svc.cluster.local:9090/v1"
+  QWEN_SPARK_MODEL: "ornith15"   # coder (80B) has not fit beside the resident judge since 2026-09-08; ornith15 is what the fleet builds with
+  QWEN_WORK_ROOT: "/work"
+  QWEN_TRACE_DIR: "/work/traces"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qwen-coder-work
+  namespace: ai-services
+  labels:
+    app: qwen-coder
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: local-path
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qwen-coder
+  namespace: ai-services
+  labels:
+    app: qwen-coder
+    app.kubernetes.io/component: agent
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate   # ReadWriteOnce PVC — only one pod can mount at a time
+  selector:
+    matchLabels:
+      app: qwen-coder
+  template:
+    metadata:
+      labels:
+        app: qwen-coder
+    spec:
+      nodeSelector:
+        node-type: control-plane   # Required for Spark tailnet reachability
+      securityContext:
+        runAsUser: 10000
+        runAsGroup: 10000
+        fsGroup: 10000
+      imagePullSecrets:
+        - name: gitea-registry-secret
+      containers:
+        - name: qwen-coder
+          image: git.example.com/homelab/qwen-coder:0.1.4
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: qwen-coder-config
+            - secretRef:
+                name: qwen-coder-secrets
+                optional: true
+          volumeMounts:
+            - name: work
+              mountPath: /work
+            - name: pi-home
+              mountPath: /root/.pi
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+      volumes:
+        - name: work
+          persistentVolumeClaim:
+            claimName: qwen-coder-work
+        - name: pi-home
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qwen-coder
+  namespace: ai-services
+  labels:
+    app: qwen-coder
+spec:
+  type: ClusterIP
+  selector:
+    app: qwen-coder
+  ports:
+    - name: http
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+---
+# Durable access via the standard homelab pattern: Traefik IngressRoute on a
+# *.example.com host (wildcard example-tls cert), network-gated like every other
+# service (LAN / Tailscale MagicDNS only). MCP endpoint: https://qwen-coder.example.com/mcp
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: qwen-coder-ingress
+  namespace: ai-services
+  labels:
+    app: qwen-coder
+    app.kubernetes.io/component: ingress
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`qwen-coder.example.com`)
+      kind: Rule
+      services:
+        - name: qwen-coder
+          port: 8080
+  tls:
+    secretName: example-tls
+---
+# Egress allowlist — DNS, Spark over tailnet, Gitea, and public HTTPS only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: qwen-coder-egress
+  namespace: ai-services
+  labels:
+    app: qwen-coder
+spec:
+  podSelector:
+    matchLabels:
+      app: qwen-coder
+  policyTypes:
+    - Egress
+  egress:
+    # DNS (cluster)
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Spark llama-swap over LAN (Deco-pinned .69; see spark-llamaswap.yaml).
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.69/32
+      ports:
+        - protocol: TCP
+          port: 9090
+    # Gitea registry/API host.
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.76/32
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 3000
+    # Public HTTPS, with RFC1918 internal ranges blocked.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443

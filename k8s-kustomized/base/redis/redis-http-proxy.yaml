@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-http-proxy
+  namespace: automation
+  labels:
+    app: redis-http-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-http-proxy
+  template:
+    metadata:
+      labels:
+        app: redis-http-proxy
+    spec:
+      containers:
+      - name: redis-http-proxy
+        image: nginx/nginx-unprivileged:alpine
+        ports:
+        - containerPort: 8080
+        volumeMounts:
+        - name: config
+          mountPath: /etc/nginx/conf.d
+        env:
+        - name: REDIS_HOST
+          value: "redis.automation.svc.cluster.local"
+        - name: REDIS_PORT
+          value: "6379"
+      volumes:
+      - name: config
+        configMap:
+          name: redis-http-proxy-config
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-http-proxy-config
+  namespace: automation
+data:
+  default.conf: |
+    server {
+        listen 8080;
+        location /redis {
+            proxy_pass http://redis.automation.svc.cluster.local:6379;
+            proxy_timeout 30s;
+            proxy_connect_timeout 10s;
+        }
+    }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-http-proxy
+  namespace: automation
+  labels:
+    app: redis-http-proxy
+spec:
+  selector:
+    app: redis-http-proxy
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+  type: ClusterIP

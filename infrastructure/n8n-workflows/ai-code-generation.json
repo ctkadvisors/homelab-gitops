@@ -1,0 +1,256 @@
+{
+  "name": "AI Code Generation",
+  "active": true,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ai-code-generation",
+        "responseMode": "onReceived",
+        "responseData": "allEntries",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "webhook-node",
+      "name": "Project Generation Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300],
+      "webhookId": "ai-code-generation"
+    },
+    {
+      "parameters": {
+        "operation": "chat",
+        "model": "qwen2.5-coder:0.5b",
+        "baseUrl": "http://ollama.ai-services.svc.cluster.local:11434",
+        "prompt": "You are an expert Next.js developer. Generate a complete, production-ready Next.js project based on this request:\n\nProject Name: {{ $json.projectName }}\nDescription: {{ $json.description }}\nFramework: {{ $json.framework }}\nFeatures: {{ $json.features.join(', ') }}\nStyling: {{ $json.styling }}\nDatabase: {{ $json.database }}\n\nGenerate:\n1. Complete file structure with all necessary files\n2. package.json with all dependencies\n3. TypeScript configuration if requested\n4. Tailwind CSS setup if requested\n5. Basic components and pages\n6. README with setup instructions\n\nReturn the response as a JSON object with this structure:\n{\n  \"files\": [\n    {\n      \"path\": \"package.json\",\n      \"content\": \"...\"\n    },\n    {\n      \"path\": \"src/app/page.tsx\",\n      \"content\": \"...\"\n    }\n  ],\n  \"instructions\": \"Setup and deployment instructions\",\n  \"dependencies\": [\"next\", \"react\", \"typescript\"],\n  \"buildCommand\": \"npm run build\",\n  \"startCommand\": \"npm run dev\"\n}\n\nMake sure the code is complete, functional, and follows Next.js 15 best practices.",
+        "options": {
+          "temperature": 0.7,
+          "maxTokens": 2000
+        }
+      },
+      "id": "ollama-generation-node",
+      "name": "Generate Code with Ollama",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "operation": "parseJson",
+        "jsonString": "={{ $json.response }}"
+      },
+      "id": "parse-json-node",
+      "name": "Parse AI Response",
+      "type": "n8n-nodes-base.json",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.callbackUrl }}",
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Webhook-Source",
+              "value": "n8n-ai-generation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "executionId",
+              "value": "={{ $json.executionId }}"
+            },
+            {
+              "name": "status",
+              "value": "completed"
+            },
+            {
+              "name": "result",
+              "value": "={{ $json }}"
+            },
+            {
+              "name": "timestamp",
+              "value": "={{ new Date().toISOString() }}"
+            }
+          ]
+        }
+      },
+      "id": "callback-node",
+      "name": "Callback to Platform API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": {
+          "status": "success",
+          "message": "AI code generation started",
+          "executionId": "={{ $json.executionId }}",
+          "estimatedDuration": 30000
+        }
+      },
+      "id": "immediate-response-node",
+      "name": "Immediate Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [450, 500]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.error }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "error-check-node",
+      "name": "Check for Errors",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [650, 500]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.callbackUrl }}",
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "executionId",
+              "value": "={{ $json.executionId }}"
+            },
+            {
+              "name": "status",
+              "value": "failed"
+            },
+            {
+              "name": "error",
+              "value": "={{ $json.error }}"
+            },
+            {
+              "name": "timestamp",
+              "value": "={{ new Date().toISOString() }}"
+            }
+          ]
+        }
+      },
+      "id": "error-callback-node",
+      "name": "Error Callback",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [850, 500]
+    }
+  ],
+  "connections": {
+    "Project Generation Webhook": {
+      "main": [
+        [
+          {
+            "node": "Immediate Response",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Generate Code with Ollama",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Code with Ollama": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ],
+      "error": [
+        [
+          {
+            "node": "Check for Errors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Response": {
+      "main": [
+        [
+          {
+            "node": "Callback to Platform API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ],
+      "error": [
+        [
+          {
+            "node": "Check for Errors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check for Errors": {
+      "main": [
+        [
+          {
+            "node": "Error Callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "id": "ai-generation",
+      "name": "AI Generation"
+    },
+    {
+      "id": "code-generation",
+      "name": "Code Generation"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2025-07-06T20:00:00.000Z",
+  "versionId": "1"
+}

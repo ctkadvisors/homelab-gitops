@@ -1,0 +1,186 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ingress-system
+  labels:
+    name: ingress-system
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/part-of: local-ai-homelab
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: traefik
+  namespace: ingress-system
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: ingress-controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: traefik
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: ingress-controller
+rules:
+  - apiGroups: [""]
+    resources: ["services", "endpoints", "secrets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["extensions", "networking.k8s.io"]
+    resources: ["ingresses", "ingressclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["extensions", "networking.k8s.io"]
+    resources: ["ingresses/status"]
+    verbs: ["update"]
+  - apiGroups: ["traefik.containo.us", "traefik.io"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+  # Gateway API RBAC permissions
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources:
+      [
+        "gatewayclasses",
+        "gateways",
+        "httproutes",
+        "referencegrants",
+        "tcproutes",
+        "tlsroutes",
+      ]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources:
+      [
+        "gatewayclasses/status",
+        "gateways/status",
+        "httproutes/status",
+        "tcproutes/status",
+        "tlsroutes/status",
+      ]
+    verbs: ["update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: traefik
+  labels:
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: ingress-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: traefik
+subjects:
+  - kind: ServiceAccount
+    name: traefik
+    namespace: ingress-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traefik
+  namespace: ingress-system
+  labels:
+    app: traefik
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: ingress-controller
+    app.kubernetes.io/part-of: local-ai-homelab
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: traefik
+  template:
+    metadata:
+      labels:
+        app: traefik
+        app.kubernetes.io/name: traefik
+        app.kubernetes.io/component: ingress-controller
+      annotations:
+        kubectl.kubernetes.io/restartedAt: "2025-07-12T20:18:00Z"
+    spec:
+      serviceAccountName: traefik
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: "true"
+      containers:
+        - name: traefik
+          image: traefik:v3.0
+          args:
+            - --api.dashboard=true
+            - --api.insecure=true
+            - --ping=true
+            - --entrypoints.web.address=:80
+            - --entrypoints.websecure.address=:443
+            - --providers.kubernetescrd=true
+            - --providers.kubernetesingress=true
+            - --providers.kubernetesgateway=true
+            - --certificatesresolvers.letsencrypt.acme.email=admin@homelab.local
+            - --certificatesresolvers.letsencrypt.acme.storage=/data/acme.json
+            - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+            - --log.level=INFO
+            - --accesslog=true
+            - --metrics.prometheus=true
+          ports:
+            - containerPort: 80
+              name: web
+              hostPort: 80
+            - containerPort: 443
+              name: websecure
+              hostPort: 443
+            - containerPort: 8080
+              name: dashboard
+              hostPort: 8080
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: data
+          hostPath:
+            path: /opt/traefik-data
+            type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: traefik
+  namespace: ingress-system
+  labels:
+    app: traefik
+    app.kubernetes.io/name: traefik
+    app.kubernetes.io/component: ingress-controller
+spec:
+  selector:
+    app: traefik
+  ports:
+    - port: 80
+      targetPort: 80
+      name: web
+    - port: 443
+      targetPort: 443
+      name: websecure
+    - port: 8080
+      targetPort: 8080
+      name: dashboard
+  type: ClusterIP

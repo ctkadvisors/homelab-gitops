@@ -1,0 +1,180 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Chris Knuteson
+#
+# kagent-draft — live iteration zone for kagent Studio (chat-to-create).
+# Deliberately NOT in any ArgoCD-managed path: homelab-apps prunes
+# overlays/production, but the Agents/AgentTemplates/AgentTasks INSIDE
+# this namespace are created imperatively by workbench-api and carry no
+# homelab-apps instance label, so Argo ignores them (no prune of drafts).
+# The namespace OBJECT + RBAC + NetworkPolicy ARE GitOps-pinned here so
+# the safety boundary is committed, not improvised.
+#
+# Paperclip rule: a draft (un-promoted) agent cannot reach the internet.
+# Egress is reopened only for DNS, the in-cluster LLM gateway, Langfuse
+# OTLP ingest, the operator template/JWKS service, NATS audit, and the
+# Kubernetes API needed for agent-pod status writes.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kagent-draft
+  labels:
+    name: kagent-draft
+    app.kubernetes.io/part-of: kagent
+    kagent.example.com/draft: 'true'
+  annotations:
+    argocd.argoproj.io/sync-wave: '6'
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kagent-draft-default-deny
+  namespace: kagent-draft
+  annotations:
+    argocd.argoproj.io/sync-wave: '6'
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# Egress allow: no cloud LLM endpoints. Those stay unreachable until a
+# committed policy change (Hermes rule).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kagent-draft-egress
+  namespace: kagent-draft
+  annotations:
+    argocd.argoproj.io/sync-wave: '6'
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kagent-system
+      ports:
+        - { protocol: TCP, port: 4000 }
+        - { protocol: TCP, port: 4222 }
+        - { protocol: TCP, port: 8085 }
+        - { protocol: TCP, port: 8080 }
+    - to: # Langfuse OTLP trace ingest (so draft agent-pods can export spans)
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: langfuse-system
+      ports:
+        - { protocol: TCP, port: 3000 }
+    - to: # Kubernetes API service (agent-pod status patch/writeback)
+        - ipBlock:
+            cidr: 10.43.0.1/32
+      ports:
+        - { protocol: TCP, port: 443 }
+    - to: # K3s API endpoint after Service DNAT (kube-router egress sees 10.0.0.76:6443)
+        - ipBlock:
+            cidr: 10.0.0.76/32
+      ports:
+        - { protocol: TCP, port: 6443 }
+---
+# RBAC: let the workbench-api ServiceAccount (kagent-workbench, in
+# kagent-system) create/manage the kagent CRs + disposition ConfigMaps
+# in kagent-draft ONLY. The chart's namespaced actions Role covers
+# kagent-system; this extends the same SA to write drafts here.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kagent-draft-writer
+  namespace: kagent-draft
+  annotations:
+    argocd.argoproj.io/sync-wave: '6'
+rules:
+  - apiGroups: ['kagent.example.com']
+    resources: ['agents', 'agenttemplates', 'agenttasks']
+    verbs: ['create', 'get', 'list', 'watch', 'delete', 'patch']
+  - apiGroups: ['']
+    resources: ['configmaps']
+    verbs: ['create', 'get', 'list', 'delete', 'patch']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kagent-draft-writer
+  namespace: kagent-draft
+  annotations:
+    argocd.argoproj.io/sync-wave: '6'
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kagent-draft-writer
+subjects:
+  - kind: ServiceAccount
+    name: kagent-workbench
+    namespace: kagent-system
+---
+# Runtime RBAC for the agent pods the operator spawns in kagent-draft.
+# Mirrors the kagent-operator chart's agent-pod-rbac.yaml in this
+# workload namespace so Jobs using serviceAccountName=kagent-agent-pod
+# can start and patch their own AgentTask status.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kagent-agent-pod
+  namespace: kagent-draft
+  labels:
+    app.kubernetes.io/part-of: kagent
+    app.kubernetes.io/component: agent-pod
+    kagent.example.com/draft: 'true'
+  annotations:
+    argocd.argoproj.io/sync-wave: '6'
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kagent-agent-pod
+  namespace: kagent-draft
+  labels:
+    app.kubernetes.io/part-of: kagent
+    app.kubernetes.io/component: agent-pod
+    kagent.example.com/draft: 'true'
+  annotations:
+    argocd.argoproj.io/sync-wave: '6'
+rules:
+  - apiGroups: ['kagent.example.com']
+    resources: ['agenttasks/status']
+    verbs: ['get', 'patch', 'update']
+  - apiGroups: ['kagent.example.com']
+    resources: ['agenttasks']
+    verbs: ['get', 'list', 'create']
+  - apiGroups: ['kagent.example.com']
+    resources: ['agents']
+    verbs: ['get', 'list']
+  - apiGroups: ['kagent.example.com']
+    resources: ['agenttemplates']
+    verbs: ['get', 'list']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kagent-agent-pod
+  namespace: kagent-draft
+  labels:
+    app.kubernetes.io/part-of: kagent
+    app.kubernetes.io/component: agent-pod
+    kagent.example.com/draft: 'true'
+  annotations:
+    argocd.argoproj.io/sync-wave: '6'
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kagent-agent-pod
+subjects:
+  - kind: ServiceAccount
+    name: kagent-agent-pod
+    namespace: kagent-draft

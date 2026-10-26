@@ -1,0 +1,176 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ollama-metrics-script
+  namespace: monitoring
+data:
+  ollama_metrics.py: |
+    #!/usr/bin/env python3
+    import requests
+    import time
+    import json
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+    import threading
+    
+    # Metrics storage
+    metrics = {
+        'ollama_up': 0,
+        'ollama_models_loaded': 0,
+        'ollama_request_total': 0,
+        'ollama_request_duration_seconds': 0,
+        'ollama_last_request_timestamp': 0
+    }
+    
+    def check_ollama_health():
+        """Check if Ollama is responding"""
+        try:
+            response = requests.get('http://ollama.ai-services.svc.cluster.local:11434/', timeout=5)
+            if response.status_code == 200:
+                metrics['ollama_up'] = 1
+                return True
+        except:
+            pass
+        metrics['ollama_up'] = 0
+        return False
+    
+    def get_loaded_models():
+        """Get list of loaded models"""
+        try:
+            response = requests.get('http://ollama.ai-services.svc.cluster.local:11434/api/tags', timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                metrics['ollama_models_loaded'] = len(data.get('models', []))
+        except:
+            metrics['ollama_models_loaded'] = 0
+    
+    def update_metrics():
+        """Update metrics periodically"""
+        while True:
+            check_ollama_health()
+            get_loaded_models()
+            time.sleep(30)
+    
+    class MetricsHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == '/metrics':
+                self.send_response(200)
+                self.send_header('Content-type', 'text/plain')
+                self.end_headers()
+                
+                # Generate Prometheus metrics
+                output = []
+                output.append('# HELP ollama_up Whether Ollama is responding')
+                output.append('# TYPE ollama_up gauge')
+                output.append(f'ollama_up {metrics["ollama_up"]}')
+                output.append('')
+                
+                output.append('# HELP ollama_models_loaded Number of loaded models')
+                output.append('# TYPE ollama_models_loaded gauge')
+                output.append(f'ollama_models_loaded {metrics["ollama_models_loaded"]}')
+                output.append('')
+                
+                output.append('# HELP ollama_request_total Total number of requests')
+                output.append('# TYPE ollama_request_total counter')
+                output.append(f'ollama_request_total {metrics["ollama_request_total"]}')
+                output.append('')
+                
+                self.wfile.write('\n'.join(output).encode())
+            else:
+                self.send_response(404)
+                self.end_headers()
+    
+    if __name__ == '__main__':
+        # Start metrics update thread
+        metrics_thread = threading.Thread(target=update_metrics, daemon=True)
+        metrics_thread.start()
+        
+        # Start HTTP server
+        server = HTTPServer(('0.0.0.0', 9090), MetricsHandler)
+        print("Ollama metrics exporter started on port 9090")
+        server.serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama-metrics-exporter
+  namespace: monitoring
+  labels:
+    app: ollama-metrics-exporter
+    app.kubernetes.io/name: ollama-metrics-exporter
+    app.kubernetes.io/component: ai-metrics
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ollama-metrics-exporter
+  template:
+    metadata:
+      labels:
+        app: ollama-metrics-exporter
+        app.kubernetes.io/name: ollama-metrics-exporter
+        app.kubernetes.io/component: ai-metrics
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: ollama-metrics-exporter
+        image: python:3.9-slim
+        command: ["/bin/bash"]
+        args: ["-c", "pip install requests && python /scripts/ollama_metrics.py"]
+        ports:
+        - containerPort: 9090
+          name: metrics
+          protocol: TCP
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+        livenessProbe:
+          httpGet:
+            path: /metrics
+            port: 9090
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /metrics
+            port: 9090
+          initialDelaySeconds: 10
+          periodSeconds: 10
+      volumes:
+      - name: scripts
+        configMap:
+          name: ollama-metrics-script
+          defaultMode: 0755
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama-metrics-exporter
+  namespace: monitoring
+  labels:
+    app: ollama-metrics-exporter
+    app.kubernetes.io/name: ollama-metrics-exporter
+    app.kubernetes.io/component: ai-metrics
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9090"
+    prometheus.io/path: "/metrics"
+spec:
+  selector:
+    app: ollama-metrics-exporter
+  ports:
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+    protocol: TCP
+  type: ClusterIP

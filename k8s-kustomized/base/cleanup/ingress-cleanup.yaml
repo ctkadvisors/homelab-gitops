@@ -1,0 +1,7 @@
+# Ingress cleanup for Fission functions
+# This ingress route needs to be removed as part of the cleanup
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: fission-functions
+  namespace: fission

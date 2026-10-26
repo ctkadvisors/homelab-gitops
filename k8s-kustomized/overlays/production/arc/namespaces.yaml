@@ -1,0 +1,20 @@
+# actions-runner-controller: GitHub Actions jobs run here, on hardware
+# we own, instead of on GitHub's metered hosted runners. GitHub stays the
+# cloud mirror; the minutes stop (Chris, 2026-09-03: "keep builds cooking
+# without paying minutes"). Auth is the same GitHub App the fleet uses
+# (example-fleet), which needs the org permission
+# "Self-hosted runners: read and write" for an org-scoped scale set.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: arc-systems
+  annotations:
+    argocd.argoproj.io/sync-wave: '-1'
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: arc-runners
+  annotations:
+    argocd.argoproj.io/sync-wave: '-1'

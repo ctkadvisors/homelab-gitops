@@ -1,0 +1,645 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Chris Knuteson
+#
+# kagent — K3s-native agent farm operator. Deploys the operator,
+# CRDs (kagent.example.com/v1alpha1: Agent, AgentTask,
+# AgentCapability, Channel, ChannelBinding, ChannelSession), RBAC, and
+# the smoke-test Agent + AgentTask in a single Application.
+#
+# Image registry: ghcr.io/ctkadvisors/kagent-{operator,agent-pod}.
+# Public ghcr.io packages from a public GitHub repo — no pull secret
+# needed. Tag push to github.com/ctkadvisors/kagent triggers
+# .github/workflows/images.yml which publishes both images.
+#
+# Source registry: github.com/ctkadvisors/kagent (public repo, no
+# auth required for `git clone`). Pre-public-release this pointed
+# at the homelab Gitea mirror to avoid external deps + keep source
+# private; once the repo went public the mirror started gating
+# every Argo sync on its own pull-sync lag with no upside, so the
+# repoURL was flipped back to GitHub directly.
+#
+# `kagent-registry-secret.yaml` (kagent-system pull-secret for the
+# old git.example.com/homelab/kagent-* images) was deleted in the
+# same cutover.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kagent
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: kagent
+    app.kubernetes.io/part-of: local-ai-homelab
+  annotations:
+    # Deploy in wave 6 — after ai-services (5), before app-layer
+    # consumers like homelab-orchestrator.
+    argocd.argoproj.io/sync-wave: '6'
+spec:
+  project: default
+
+  source:
+    # Argo pulls the Helm chart source straight from public GitHub.
+    # Same auth-free read-only access as the ghcr.io image pull path,
+    # and avoids the homelab Gitea mirror's pull-sync lag (which
+    # would otherwise gate every Argo sync on the mirror catching
+    # up to GitHub main).
+    repoURL: https://github.com/ctkadvisors/kagent.git
+    # v0.2.37-shell-known-hosts-rc.1 stores shell.exec SSH host keys in
+    # /tmp so the read-only tool-gateway filesystem does not trip
+    # OpenSSH's default ~/.ssh known_hosts path.
+    #
+    # v0.2.42-probe-default-off-rc.1 defaults the operator's /healthz
+    # liveness+readiness probes to DISABLED. v0.2.40 shipped them enabled
+    # to catch the 2026-08-05 hang (watches died, process silent for 111
+    # minutes, pod still Running 1/1 ready:true). That backfired: /healthz
+    # returns 503 for "informers dead" AND for "no event recently", so on
+    # an idle cluster it killed a healthy operator 51 times in a row
+    # (every restart lastState Completed / exit 0), and `helm install
+    # --wait` on a fresh kind cluster timed out in CI. The probes remain
+    # available behind substrateHealth.*Probe.enabled; see the values
+    # block below, which pins them off for this cluster too.
+    #
+    # The 2026-08-05 hang is therefore still undetected — the real fix is
+    # in substrate-health.ts (report watch-connection state, not
+    # time-since-last-event) and has not been done.
+    #
+    # Also carries v0.2.41 (session task deadline 300s -> 900s so model
+    # cold starts cannot eat the whole budget), v0.2.39 (shell.exec host
+    # allowlist moved out of source into `toolRuntime.shell.hosts` below,
+    # + a KAGENT_SHELL_HOSTS env) and v0.2.38 (hono security bump,
+    # corrected NetworkPolicy claim — K3s DOES enforce, via its embedded
+    # kube-router controller).
+    #
+    # NOT render-neutral vs v0.2.37: adds KAGENT_SHELL_HOSTS when hosts
+    # are set. Everything else in the diff is prose or defaults-off.
+    # v0.2.45-telegram-brain-rc.1 — channels.telegram.brain.* values.
+    targetRevision: v0.2.65-bridge-last-marker-rc.1
+    path: packages/operator/charts/kagent-operator
+    helm:
+      releaseName: kagent
+      values: |
+        # v0.1.7-rig.0: cluster-wide AgentTask informer so the rc-pilot
+        # namespace's tasks are visible. ClusterRole already grants the
+        # required get/list/watch on agenttasks/jobs/pods cluster-wide.
+        watchAllNamespaces: true
+
+        # Bumped here when github.com/ctkadvisors/kagent publishes a new
+        # tag. ghcr.io tags are immutable per release so IfNotPresent is
+        # correct — set Always only if pinning to a moving tag.
+        image:
+          repository: ghcr.io/ctkadvisors/kagent-operator
+          # v0.2.33-shell-ssh-runtime-rc.1 — uniform tag bump alongside
+          # the tool-gateway runtime image's openssh-client fix.
+          tag: 'v0.2.65-bridge-last-marker-rc.1'
+          pullPolicy: IfNotPresent
+
+        # Keep the GHCR pull secret while the new kagent-tool-gateway
+        # package visibility settles; existing public images still work
+        # with an authenticated pull.
+        imagePullSecrets:
+          - name: ghcr-secret
+
+        # Keep the operator off k3s-reconciler. That node accepts
+        # schedules but currently leaves new pods Pending with no
+        # containerStatuses; pin the control-plane runtime to the
+        # known-good compute worker until the node-side issue is fixed.
+        nodeSelector:
+          node-type: compute-worker
+
+        agentPod:
+          image:
+            repository: ghcr.io/ctkadvisors/kagent-agent-pod
+            # v0.2.36-qwen-inline-json-args-rc.1 — openai-compat now
+            # recovers leaked inline JSON arguments from function.name
+            # when function.arguments is empty (for example
+            # wait_for_child_task{"uid":...}). Carries forward v0.2.35's
+            # inline-name truncation, v0.2.34's leaked <parameter=... fix,
+            # v0.2.30's leaked </tool_call> fix, and v0.2.20's
+            # dead-end-completion fix.
+            # v0.2.44-gateway-body-cap-rc.1 — status-0 LLM errors carry
+            # undici's cause in the AgentTask error, and transport
+            # failures retry like 429s (context refusal stays terminal).
+            tag: 'v0.2.65-bridge-last-marker-rc.1'
+            pullPolicy: IfNotPresent
+          imagePullSecret: 'ghcr-secret'
+          # The chart creates this SA + RBAC (rbac.create: true).
+          serviceAccountName: 'kagent-agent-pod'
+          rbac:
+            create: true
+          # Keep spawned AgentTask pods off k3s-reconciler for the same
+          # reason as the operator deployment above: that node currently
+          # accepts schedules but strands new pods Pending.
+          nodeSelector:
+            node-type: compute-worker
+
+          # Ignored since llmGateway.enabled (below) — kept pointing at the
+          # gateway so nothing ever falls back to the retired jetson1.
+          litellmBaseUrl: 'http://kagent-llm-gateway.kagent-system.svc.cluster.local:4000/v1'
+          # v0.0.6+ structured form — `value` is the deprecated inline
+          # path; secretName/secretKey is preferred. LM Studio doesn't
+          # actually validate the key, so plain literal here is fine.
+          litellmApiKey:
+            secretName: ''
+            secretKey: ''
+            value: 'lm-studio'
+
+          # Artifact storage is OFF until the in-pod write_artifact
+          # tool (Phase 5 P3 wire-up) actually consumes the mount.
+          # The chart's default-on creates a `kagent-artifacts` PVC
+          # against `ai-models-storage` (volumeBindingMode:
+          # WaitForFirstConsumer) — and Argo's sync ordering then
+          # deadlocks: the PVC stays Pending until a Pod consumes it,
+          # but the smoke-test AgentTask is a Sync hook that won't be
+          # created until prior-wave resources (incl. the PVC) are
+          # Healthy. Re-enable in lockstep with the artifact-writer
+          # slice; at that point, also pre-bind to a static PV via
+          # `volumeName` so WFC binding is bypassed.
+          artifactStorage:
+            enabled: false
+
+          # WS-K — flip on the in-pod spawn_child_task tool. Per-Agent
+          # `allowedChildAgents` is the actual trust boundary; this is
+          # the operator-layer kill switch. Required for the Phase 5.x
+          # demo flow.
+          spawnChild:
+            enabled: true
+
+          # Kata microVMs — LIVE 2026-09-01. kata-deploy (ArgoCD app,
+          # upstream 4.1.0) installed on elitemini2; smoke test proved
+          # guest kernel 6.18.35 vs host 6.8.0-138. Agent pods already
+          # pin node-type: compute-worker (= elitemini2), so ALL agent
+          # runs now boot in per-pod microVMs — the Codex-style
+          # isolation this was staged for. Revert = empty strings.
+          runtimeClasses:
+            default: 'kata-qemu'
+            strict: 'kata-qemu'
+
+          # WS-M — flip on the AgentTemplate substrate. Boots the
+          # operator's template-server on port 8085 + creates the
+          # ClusterIP Service the agent-pod's ensure_agent_from_template
+          # tool POSTs to. Same default-OFF posture as spawnChild.
+          templates:
+            enabled: true
+            serverPort: 8085
+
+          # v0.1.6 — ship OTel traces to Langfuse self-hosted. Spawned
+          # agent-pods get OTEL_EXPORTER_OTLP_TRACES_ENDPOINT +
+          # OTEL_EXPORTER_OTLP_HEADERS via these. OtelTraceSink emits
+          # Langfuse + GenAI semconv attrs so spans render as
+          # first-class Generations/Tools in the Langfuse UI.
+          otlpEndpoint: 'http://langfuse-web.langfuse-system.svc.cluster.local:3000/api/public/otel/v1/traces'
+          otlpHeaders:
+            secretName: kagent-llm-langfuse-otlp-headers
+            secretKey: headers
+            value: ''
+
+        # v0.1.5 STAGE 2 — agents now route LLM calls through the
+        # gateway. Sets KAGENT_ADMISSION_CONTROL_ENABLED=true on the
+        # operator (suspend new Jobs on creation; un-suspend based on
+        # ModelEndpoint capacity) AND injects KAGENT_LLM_GATEWAY_BASE_URL
+        # into spawned Jobs so they call the gateway service instead
+        # of going direct to Jetson1. The litellmBaseUrl above is now
+        # ignored — gateway is the chokepoint.
+        llmGateway:
+          enabled: true
+          baseUrl: 'http://kagent-llm-gateway.kagent-system.svc.cluster.local:4000/v1'
+          apiKey:
+            secretName: kagent-llm-gateway-token
+            secretKey: token
+
+        # v0.2.28-channel-telegram-rc.1 — token-protected channel
+        # gateway plus WhatsApp-Web/Baileys and Telegram Bot API
+        # adapter config. Channel/ChannelBinding policy lives in
+        # channel-control.yaml; channels begin in dmPolicy=pairing so
+        # first contact records sender identity without launching work.
+        channels:
+          gateway:
+            enabled: true
+            authTokenSecretName: kagent-channel-gateway-token
+            authTokenSecretKey: token
+          whatsapp:
+            enabled: true
+            image:
+              repository: ghcr.io/ctkadvisors/kagent-channel-whatsapp-adapter
+              tag: 'v0.2.65-bridge-last-marker-rc.1'
+              pullPolicy: IfNotPresent
+            channelName: whatsapp-work
+            accountId: work
+            gatewayTokenSecretName: kagent-channel-gateway-token
+            gatewayTokenSecretKey: token
+            persistence:
+              enabled: true
+              storageClassName: local-path
+              size: 1Gi
+            nodeSelector:
+              node-type: compute-worker
+          telegram:
+            # @hlhermbot BotFather token sealed as
+            # Secret/kagent-telegram-bot-token in channel-control.yaml
+            # (wave 5, ahead of this Deployment).
+            enabled: true
+            image:
+              repository: ghcr.io/ctkadvisors/kagent-channel-telegram-adapter
+              # v0.2.45-telegram-brain-rc.1 — one graphiti episode per
+              # exchange at delivery + previous-turn bridge. (v0.2.29
+              # fixed the unref()'d timers that exited the process.)
+              tag: 'v0.2.65-bridge-last-marker-rc.1'
+              pullPolicy: IfNotPresent
+            channelName: telegram-work
+            accountId: work
+            botTokenSecretName: kagent-telegram-bot-token
+            botTokenSecretKey: token
+            gatewayTokenSecretName: kagent-channel-gateway-token
+            gatewayTokenSecretKey: token
+            # [fleet now] (2026-09-09): the adapter fetches the launcher's
+            # /missions and puts the health summary, memory by author and
+            # the rules into every turn, so the concierge answers fleet
+            # questions from the field instead of choosing to look (it did
+            # not, and said it could not see the fleet's memory).
+            fleetUrl: http://mission-launcher.kagent-system.svc:8080
+            # The brain is the conversation memory (2026-09-02): one
+            # graphiti episode per exchange, written by the adapter at
+            # delivery, and the previous exchange bridged into each new
+            # message. Token = graphiti-brain-token reflected from
+            # ai-services (see graphiti-brain-token-sealed.yaml).
+            brain:
+              mcpUrl: http://graphiti-mcp.ai-services.svc.cluster.local:8000/mcp
+              tokenSecretName: graphiti-brain-token
+              tokenSecretKey: token
+              operatorName: Chris
+            nodeSelector:
+              node-type: compute-worker
+
+        # Local AgentCore-style tool runtime. This deploys the
+        # task-scoped gateway in kagent-system, points spawned agent-pods
+        # at it, and runs Steel in-cluster for browser sessions. Code
+        # execution is currently the gateway-local runner; Agent Sandbox
+        # CRD templates are rendered for the k8s-native backend handoff.
+        toolRuntime:
+          enabled: true
+          paused: false
+          gateway:
+            image:
+              # v0.2.37-shell-known-hosts-rc.1 — forces shell.exec SSH
+              # known_hosts writes into /tmp for the read-only gateway pod.
+              #
+              # v0.2.42-probe-default-off-rc.1 — the shell.exec
+              # target allowlist now comes from toolRuntime.shell.hosts
+              # (see below) instead of a hardcoded HOST_IPS map. That map
+              # had elitemini2 at 10.0.0.74, a different machine with
+              # no sshd listening, so `shell.exec host=elitemini2` could
+              # never connect; jetson2 (.75) was correct. Fail-closed —
+              # an empty/absent host list refuses every call.
+              # v0.2.43-external-mcp-prefix-rc.2 — external MCP tools are
+              # now namespaced mcp.<tool> so the gateway can route them;
+              # chart adds externalProvidersSecretRef (auth headers must
+              # not sit in these values).
+              tag: 'v0.2.65-bridge-last-marker-rc.1'
+            # The graphiti brain (remoteMcp + bearer header) — sealed as
+            # kagent-tool-gateway-external-providers in kagent-system.
+            externalProvidersSecretRef:
+              name: kagent-tool-gateway-external-providers
+              key: providers.json
+            toolProfiles:
+              - name: browser-code-researcher
+                description: Browser + code runtime profile for bounded local research jobs.
+                tools:
+                  - browser.start_session
+                  - browser.goto
+                  - browser.extract_text
+                  - code_interpreter.execute_code
+                  # Brain (graphiti) — read + write; destructive tools
+                  # (clear_graph, delete_*) deliberately ungranted.
+                  - mcp.search_memory_facts
+                  - mcp.search_nodes
+                  - mcp.get_episodes
+                  - mcp.add_memory
+                  # GitHub PR feedback loop: roll Chris's Telegram
+                  # verdicts onto escalated kagent PRs.
+                  - http.github.pr_comment
+                  - http.github.pr_view
+                  # Web search (in-cluster SearXNG) — search first, browse second.
+                  - http.web_search
+                  # "Do this for me": launch a brief/implement/test/publish Job (mission.yaml).
+                  - http.mission_launch
+                  - http.mission_status
+                  - http.mission_list
+                  # Cloudflare MCP (remoteMcp providers, toolPrefix mcp.cf.): docs
+                  # server now; the API server's search/execute/docs join under
+                  # the same prefix once a read-only CF token is sealed.
+                  - mcp.cf.search_cloudflare_documentation
+                  - mcp.cf.search
+                  - mcp.cf.execute
+                  - mcp.cf.docs
+              - name: brain-memory
+                description: Graphiti brain only — read facts/episodes and write episodes. For the audit loop and other memory-first agents.
+                tools:
+                  - mcp.search_memory_facts
+                  - mcp.search_nodes
+                  - mcp.get_episodes
+                  - mcp.add_memory
+              - name: builder-shell
+                description: Shell/SSH + browser/code runtime profile for the homelab-builder agent.
+                tools:
+                  - shell.exec
+                  - code_interpreter.execute_code
+                  - http.web_search
+                  - browser.start_session
+                  - browser.goto
+                  - browser.extract_text
+                  # Brain (graphiti) — read + write; destructive tools ungranted.
+                  - mcp.search_memory_facts
+                  - mcp.search_nodes
+                  - mcp.get_episodes
+                  - mcp.add_memory
+            nodeSelector:
+              node-type: compute-worker
+          browser:
+            steel:
+              enabled: true
+              nodeSelector:
+                node-type: compute-worker
+          shell:
+            # SSH key for the kagent-builder OS account (see
+            # docs/runbooks/kagent-builder-node-setup.md). Only jetson2
+            # is actually provisioned as of this writing; elitemini2 is
+            # pending. Secret created by homelab-builder-secrets.yaml.
+            sshUser: kagent-builder
+            sshKeySecret:
+              name: kagent-builder-ssh-key
+              key: id_ed25519
+            # Target allowlist. Moved out of kagent's shell-runner.ts in
+            # v0.2.39 (it was hardcoded there through v0.2.38, which both
+            # published these addresses in a public repo and made
+            # shell.exec unusable for anyone else). The gateway still
+            # enforces the list as a closed allowlist; this is only where
+            # it is declared.
+            #
+            # Only jetson2 is listed because it is the only host with the
+            # kagent-builder account provisioned — verified 2026-08-05:
+            # `getent passwd kagent-builder` returns a user there and
+            # nothing on elitemini2. Listing a host that would fail SSH
+            # auth is worse than omitting it: omitted gives the agent
+            # "unknown host (allowed: jetson2)", listed gives an opaque
+            # SSH failure.
+            #
+            # elitemini2 is 10.0.0.58, static since 2026-08-12
+            # (config/network.yaml; .74, .66 and .64 were DHCP drift and
+            # now belong to other devices). Uncomment once the runbook has
+            # provisioned kagent-builder there.
+            hosts:
+              - name: jetson2
+                address: 10.0.0.75
+              # - name: elitemini2
+              #   address: 10.0.0.58
+
+        # v0.1.6 STAGE C — Langfuse-managed system prompts. Spawned
+        # agent-pods inherit KAGENT_LANGFUSE_HOST + creds and fetch
+        # any Agent.spec.systemPromptRef body from Langfuse at boot.
+        # Agents without a systemPromptRef are unaffected.
+        langfuse:
+          enabled: true
+          host: 'http://langfuse-web.langfuse-system.svc.cluster.local:3000'
+          apiKey:
+            secretName: kagent-llm-langfuse-creds
+            publicKeyKey: public
+            secretKeyKey: secret
+
+        # Audit emission needs a NATS JetStream service. There is no
+        # NATS service currently deployed in kagent-system or elsewhere
+        # in the cluster, so the default audit-stream post-sync hook
+        # hangs/fails every Argo sync and runtime publishers no-op after
+        # DNS failures. Keep this off until NATS is installed or a real
+        # external NATS URL is configured.
+        audit:
+          enabled: false
+
+        # v0.1.7-rig.2 — substrate verifier reconciler (Wave 2 §6.3).
+        # Operator-mediated post-completion quality gate. Two paths:
+        #   - scriptRef:  one-shot Job spawn keyed off the parent's
+        #                 result + payload. Not used in homelab today
+        #                 (no verifier-runner image cut yet); the
+        #                 default chart `scriptImage` is a placeholder.
+        #   - llmJudgePromptRef: Langfuse prompt fetch + gateway POST,
+        #                 parses {verdict, reason}. Pilot RC uses this.
+        # Keep verifier off for the local runtime release. It previously
+        # defaulted to Cloudflare and could spend credits while tool
+        # routing was broken; re-enable only with an explicitly local
+        # judge or a deliberate cloud budget.
+        verifier:
+          enabled: false
+          defaultModel: 'nemotron-3-nano:4b'
+
+        # Wave 5 / GA hardening — enable Secret-mounted per-task
+        # capability JWTs. The signing keypair is a kagent-system
+        # Secret reconciled by this same production overlay before
+        # the operator Application syncs.
+        capabilities:
+          enabled: true
+          signingSecretName: kagent-cap-ca
+          signingKeyKey: tls.key
+          signingPublicKeyKey: tls.crt
+          kid: 'kagent-cap-ca-20260504'
+          issuer: 'kagent.example.com/operator'
+
+        # Wave 4 KeyRotation policy is consumed by the capability
+        # issuer when capabilities.enabled=true. Gateway key rotation
+        # stays off until the deployed gateway advertises the admin
+        # rotate endpoint contract.
+        keyRotation:
+          enabled: true
+          cap:
+            shortTtlMinutes: 60
+            longTtlGraceSeconds: 300
+          gateway:
+            enabled: false
+
+        # Single-tenant homelab default. Tenant CR is reconciled by
+        # tenant.yaml in this overlay; the operator stamps
+        # claims.tenant=homelab into mounted cap bundles when no more
+        # specific task/agent tenant label is present.
+        tenancy:
+          enabled: true
+          defaultTenant: homelab
+
+        # KagentSchedule controller (Wave 0 triggers). Discovered
+        # 2026-08-30: default-OFF, so the first schedule
+        # (brain-invalidation-audit) sat inert past its tick. Webhook
+        # receiver comes along ClusterIP-only, HMAC-gated, no triggers
+        # defined — harmless.
+        triggers:
+          enabled: true
+
+        agent:
+          # argo-resync-trigger: 2026-05-06T20:59Z
+          # modelClass → physical model id, resolved at AgentTask
+          # materialization. Agent CRs can declare `spec.modelClass`
+          # to decouple their definition from the physical model that
+          # backs the tier today. See kagent docs/MODEL-ROUTING.md.
+          # DEFAULT INFERENCE = `coder` (Qwen3-Coder-Next NVFP4 on the
+          # DGX Spark, via the qwen-coder-spark ModelEndpoint). Promoted
+          # from operator-investigator-only to the default for all three
+          # tiers on 2026-08-06.
+          #
+          # Verified before promoting: llama-swap on the Spark answers
+          # /v1/models with `coder` present (HTTP 200, ~2ms from both
+          # elitemini2 and jetson2), and the gateway's usage table shows
+          # 127 successful 200s against `coder` from in-cluster. Agents do
+          # not dial it directly — they go through kagent-llm-gateway
+          # (llmGateway.enabled: true below makes litellmBaseUrl moot),
+          # and that pod runs on elitemini, which reaches the Spark on
+          # both its tailnet and LAN addresses.
+          #
+          # KNOWN TRADE-OFF — the Spark holds ONE "big" model resident at
+          # a time and swaps on request for another, with cold starts of
+          # roughly five minutes (see k8s-kustomized/base/ai-services/
+          # spark-llamaswap.yaml). AgentTask runConfig.timeoutSeconds is
+          # commonly 300, so a cold swap can burn the whole budget and
+          # surface as `LLM backend returned HTTP 502/503`. The gateway
+          # usage table already shows 8x502 + 6x503 on `coder` in the
+          # 2026-07-17..27 window, which is consistent with swap/cold
+          # start rather than the box being down. Watch for that pattern
+          # after this change; if it recurs, either raise the task
+          # timeout or move the chattier tiers back to nemotron.
+          #
+          # nemotron-3-nano:4b (jetson1) stays available as a named class
+          # for anything that wants the small, always-warm model.
+          # DEFAULT INFERENCE = `ornith15` on the DGX Spark (Ornith-1.5-35B
+          # -A3B-NVFP4, vLLM in the ornith-b12x-serve container, ~81 tok/s).
+          # NOTE: use `ornith15`, NOT `ornith`. The plain `ornith` (36.9G q8
+          # GGUF, launch-ornith.sh → :8207) has a broken backend — its
+          # upstream refuses/exits prematurely, so requests hang then fail.
+          # `coder` before it also 502'd. Only ornith15 actually serves.
+          # See docs/runbooks/agent-inference-upgrade.md.
+          # contextWindowTokens (2026-09-02): without it the agent-loop's
+          # context safety net and pressure detector are dead code — the
+          # fleet ran into a 64 KiB gateway body cap instead. ornith15 is
+          # served with --max-model-len 262144.
+          modelClasses:
+            tool-caller-default: { model: 'ornith15', contextWindowTokens: 262144 }
+            text-generator-default: { model: 'ornith15', contextWindowTokens: 262144 }
+            reasoner-default: { model: 'ornith15', contextWindowTokens: 262144 }
+            # Retained so existing Agent CRs pinning this class keep
+            # resolving; same physical model as the defaults now.
+            tool-caller-spark-qwen: { model: 'ornith15', contextWindowTokens: 262144 }
+            # Escape hatch: small, resident, no swap penalty.
+            tool-caller-nemotron: 'nemotron-3-nano:4b'
+            text-generator-nemotron: 'nemotron-3-nano:4b'
+            # Heavy tier — ALL INTERNAL (Chris 2026-09-01: no cloud AI,
+            # ever). Maps to ornith15: it BEAT Qwen3-Coder-Next in the
+            # gauntlet (17/18, 81.5 tok/s, 262k ctx) AND is the resident
+            # model, so heavy == default with zero swap penalty. Do NOT
+            # point these at `coder` — the llama-swap config comment
+            # calling coder the fleet default is stale. The class names
+            # exist so a future bigger model is a one-line repoint.
+            tool-caller-heavy: 'ornith15'
+            reasoner-heavy: 'ornith15'
+            # Vision tier — gemma (Gemma 4 12B multimodal). Same
+            # one-slot swap caveat.
+            vision-default: 'gemma'
+
+        # Liveness OFF, readiness ON — 2026-08-06.
+        #
+        # v0.2.40 wired both probes to the operator's /healthz. That
+        # endpoint returns 503 for "informers are dead" AND for "no
+        # informer event within freshnessMaxMs", and on this cluster the
+        # second case is just a quiet afternoon. The operator was killed
+        # 50 times in a row with lastState Completed / exit 0 — a clean
+        # SIGTERM each time, i.e. a healthy process being shot for being
+        # idle. Staleness tracked pod age exactly, so even the initial
+        # informer sync does not refresh the timestamp.
+        #
+        # Readiness is off too, and that reversal is deliberate. Keeping
+        # it on left the operator pinned NotReady for 35+ minutes while
+        # it was demonstrably healthy and reconciling ("informers
+        # started", 0 restarts) — /healthz was simply reporting a quiet
+        # cluster. A permanently-NotReady pod is not a useful signal; it
+        # is just a red light that never turns green, and it makes the
+        # Argo Application health misleading. CI hit the same wall:
+        # `helm install --wait` on kind timed out because a fresh
+        # cluster never emits a first informer event.
+        #
+        # Both come back once /healthz distinguishes "watch connection
+        # dead" from "nothing happened lately" — a code change in
+        # substrate-health.ts, tracked against the kagent repo. Until
+        # then the 2026-08-05 silent-hang failure mode is UNDETECTED and
+        # that is a known, accepted gap rather than a solved problem.
+        substrateHealth:
+          livenessProbe:
+            enabled: false
+          readinessProbe:
+            enabled: false
+
+        logLevel: 'info'
+
+        # Smoke test disabled — the v0.5.0-tenancy operator's
+        # ownerRef-driven Job GC interacts badly with Argo's
+        # `hook-delete-policy: BeforeHookCreation` on the smoke
+        # AgentTask, causing a delete/recreate loop that never
+        # reaches a terminal phase and hangs the sync. Re-enable
+        # once the smoke flow is reworked to either drop the
+        # BeforeHookCreation policy or run as a Helm test instead
+        # of an Argo sync hook. Tracked alongside the v0.1.6-ga-
+        # hardening release notes.
+        smokeTest:
+          enabled: false
+          # Match a model that's actually loaded in LM Studio. Update
+          # this string to whatever shows up in `lms list`.
+          model: 'google/gemma-4-26b-a4b'
+          prompt: 'In one sentence, what is K3s?'
+          timeoutSeconds: 300
+
+        # Phase 1 / DISP-01 (kagent v0.2 AgentDisposition prototype) —
+        # cluster-side schema-validation Job. ArgoCD-sync hook installs
+        # two seed ConfigMaps (one valid, one missing tokensPerDay) and
+        # a node:22-alpine Job that parses both with js-yaml@4 and
+        # exits 0 only when valid passes AND invalid is rejected.
+        # Re-runs on every Argo sync (Replace=true,Force=true).
+        # Disabled in production after Phase 1 verification. The hook
+        # has no nodeSelector values, so it can land on k3s-reconciler
+        # and block Argo while the unit-level parser tests in
+        # @kagent/dto cover the same field rules.
+        dispositionSchemaTest:
+          enabled: false
+
+        # The chart's NetworkPolicy currently has policyTypes
+        # [Ingress, Egress] with NO ingress rules — default-deny —
+        # which blocks agent-pods from reaching the operator's :8085
+        # JWKS endpoint to verify mounted capability JWTs (boot fails
+        # with `connect ECONNREFUSED <op-svc>:8085`). Egress is also
+        # restricted to DNS+443+6443, blocking the audit publisher
+        # from reaching NATS:4222. Disable the NetworkPolicy in
+        # production until the chart adds ingress rules for the
+        # template-server port + audit egress; the cluster's L3
+        # boundary is the Tailscale route, NetworkPolicy is the
+        # second-line trust boundary that's not landed yet.
+        networkPolicy:
+          enabled: false
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kagent-system
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+      # Helm: skip CRDs from prune so `helm uninstall` doesn't cascade-
+      # delete every Agent + AgentTask in the cluster.
+      - RespectIgnoreDifferences=true
+      # Replace=true was tried during the v0.1.6-ga-hardening rollout
+      # to clear stale `value: ""` env entries the prior chart left on
+      # the operator Deployment, but Argo's API server has
+      # sync-with-replace explicitly disabled. The deadlock was broken
+      # by deleting the operator Deployment so the next plain apply is
+      # a fresh CREATE (no merge artifact) — no syncOption needed.
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

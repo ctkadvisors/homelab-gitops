@@ -1,0 +1,147 @@
+---
+# Compute Optimization Tasks
+# Performance optimizations for high-performance x86_64 compute workers
+
+- name: Display compute optimization start
+  debug:
+    msg:
+      - "Starting compute optimization for {{ inventory_hostname }}"
+      - "Architecture: {{ ansible_architecture }}"
+      - "CPU cores: {{ ansible_processor_vcpus }}"
+      - "Memory: {{ ansible_memtotal_mb }}MB"
+
+- name: Install performance packages
+  apt:
+    name:
+      - cpufrequtils
+      - irqbalance
+      - htop
+      - iotop
+      - sysstat
+      - linux-tools-generic
+      - linux-tools-common
+    state: present
+    update_cache: yes
+  tags: packages
+
+- name: Create data directories
+  file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop: "{{ data_directories }}"
+  tags: directories
+
+- name: Configure CPU governor
+  copy:
+    content: |
+      #!/bin/bash
+      # Set CPU governor to performance
+      echo "{{ performance_config.cpu_governor }}" | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+      
+      # Enable turbo boost if supported
+      if [ -f /sys/devices/system/cpu/cpufreq/boost ]; then
+        echo 1 > /sys/devices/system/cpu/cpufreq/boost
+      fi
+    dest: /usr/local/bin/set-cpu-performance.sh
+    mode: '0755'
+  tags: cpu
+
+- name: Create systemd service for CPU performance
+  copy:
+    content: |
+      [Unit]
+      Description=Set CPU Performance Mode
+      After=multi-user.target
+      
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/set-cpu-performance.sh
+      RemainAfterExit=yes
+      
+      [Install]
+      WantedBy=multi-user.target
+    dest: /etc/systemd/system/cpu-performance.service
+  notify: reload systemd
+  tags: cpu
+
+- name: Enable CPU performance service
+  systemd:
+    name: cpu-performance
+    enabled: yes
+    state: started
+    daemon_reload: yes
+  tags: cpu
+
+- name: Configure system optimizations
+  sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: yes
+  loop:
+    - { key: "vm.swappiness", value: "{{ system_optimizations.vm_swappiness }}" }
+    - { key: "vm.dirty_ratio", value: "{{ system_optimizations.vm_dirty_ratio }}" }
+    - { key: "vm.dirty_background_ratio", value: "{{ system_optimizations.vm_dirty_background_ratio }}" }
+    - { key: "vm.vfs_cache_pressure", value: "{{ system_optimizations.vm_vfs_cache_pressure }}" }
+    - { key: "net.core.rmem_max", value: "{{ system_optimizations.net_core_rmem_max }}" }
+    - { key: "net.core.wmem_max", value: "{{ system_optimizations.net_core_wmem_max }}" }
+    - { key: "net.core.netdev_max_backlog", value: "{{ system_optimizations.net_core_netdev_max_backlog }}" }
+    - { key: "net.ipv4.tcp_congestion_control", value: "{{ system_optimizations.net_ipv4_tcp_congestion_control }}" }
+    - { key: "net.ipv4.tcp_window_scaling", value: "{{ system_optimizations.net_ipv4_tcp_window_scaling }}" }
+    - { key: "fs.file-max", value: "{{ system_optimizations.fs_file_max }}" }
+    - { key: "fs.nr_open", value: "{{ system_optimizations.fs_nr_open }}" }
+  tags: sysctl
+
+- name: Install AMD GPU packages
+  apt:
+    name: "{{ amd_gpu_config.rocm_packages }}"
+    state: present
+  when: amd_gpu_config.enabled
+  tags: amd-gpu
+
+- name: Configure AMD GPU environment
+  lineinfile:
+    path: /etc/environment
+    line: "{{ item.key }}={{ item.value }}"
+    regexp: "^{{ item.key }}="
+  loop: "{{ amd_gpu_config.rocm_env_vars | dict2items }}"
+  when: amd_gpu_config.enabled
+  tags: amd-gpu
+
+- name: Enable required services
+  systemd:
+    name: "{{ item }}"
+    enabled: yes
+    state: started
+  loop: "{{ services_config.enable_services }}"
+  tags: services
+
+- name: Disable unnecessary services
+  systemd:
+    name: "{{ item }}"
+    enabled: no
+    state: stopped
+  loop: "{{ services_config.disable_services }}"
+  ignore_errors: yes
+  tags: services
+
+- name: Configure firewall rules
+  ufw:
+    rule: allow
+    port: "{{ item.port }}"
+    proto: "{{ item.protocol }}"
+    comment: "{{ item.description }}"
+  loop: "{{ security_config.firewall_rules }}"
+  when: firewall_config.enabled | default(false)
+  tags: firewall
+
+- name: Display compute optimization completion
+  debug:
+    msg:
+      - "Compute optimization completed for {{ inventory_hostname }}"
+      - "CPU governor set to: {{ performance_config.cpu_governor }}"
+      - "AMD GPU support: {{ amd_gpu_config.enabled }}"
+      - "Data directories created: {{ data_directories | length }}"

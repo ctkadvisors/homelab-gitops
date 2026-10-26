@@ -1,0 +1,59 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: local-ai-homelab-base-without-monitoring
+  annotations:
+    config.kubernetes.io/local-config: "true"
+    description: "Base configuration for Local AI Homelab excluding monitoring"
+
+# Base resources from subdirectories (excluding monitoring)
+resources:
+  - ../../../base/networking/
+  - ../../../base/infrastructure/
+  - ../../../base/ai-services/
+  - ../../../base/vector-db/
+  - ../../../base/ml-registry/
+  - ../../../base/search/
+  - ../../../base/backup/
+  # monitoring excluded - managed by separate monitoring-stack application
+  # automation and dashboard will be included via overlays
+
+# Common labels applied to ALL resources
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: local-ai-homelab
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/version: "2.0.0"
+      environment: production
+
+# Common annotations applied to ALL resources
+commonAnnotations:
+  config.kubernetes.io/origin: |
+    path: k8s-kustomized/overlays/production/base-without-monitoring/kustomization.yaml
+    repo: local-ai-homelab
+  homelab.local/managed-by: "ansible-kustomize"
+
+# Configuration is handled by individual service manifests
+# to ensure proper namespace assignment
+
+# Global patches for security and best practices
+patches:
+  # Add security context to all deployments
+  - target:
+      kind: Deployment
+    patch: |-
+      - op: add
+        path: /spec/template/spec/securityContext
+        value:
+          fsGroup: 1000
+          runAsNonRoot: false
+
+# Validation and generation options
+generatorOptions:
+  disableNameSuffixHash: false
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    config.kubernetes.io/local-config: "true"

@@ -1,0 +1,100 @@
+---
+# Default variables for k3s-master role
+
+# K3s Master Configuration
+k3s_master_config:
+  # Installation
+  version: "{{ k3s.version | default('v1.32.5+k3s1') }}"
+  channel: "{{ k3s.channel | default('stable') }}"
+  install_dir: "{{ k3s.install_dir | default('/usr/local/bin') }}"
+  
+  # Cluster configuration
+  cluster_init: true
+  cluster_domain: "{{ k3s.cluster.domain | default('homelab') }}"
+  cluster_cidr: "{{ k3s.cluster.cidr | default('10.42.0.0/16') }}"
+  service_cidr: "{{ k3s.cluster.service_cidr | default('10.43.0.0/16') }}"
+  cluster_dns: "{{ k3s.cluster.dns | default('10.43.0.10') }}"
+  
+  # Network configuration
+  flannel_backend: "{{ k3s.network.backend | default('vxlan') }}"
+  
+  # Disabled components (we'll install our own)
+  disable_components:
+    - traefik      # Using our own Traefik
+    - servicelb    # Using MetalLB
+    - local-storage # Using NFS/hostPath strategy
+  
+  # Additional arguments
+  extra_args:
+    - "--cluster-domain={{ k3s_master_config.cluster_domain }}"
+    - "--cluster-cidr={{ k3s_master_config.cluster_cidr }}"
+    - "--service-cidr={{ k3s_master_config.service_cidr }}"
+    - "--cluster-dns={{ k3s_master_config.cluster_dns }}"
+    - "--flannel-backend={{ k3s_master_config.flannel_backend }}"
+    - "--write-kubeconfig-mode=644"
+    - "--bind-address=0.0.0.0"
+    - "--disable=traefik"
+    - "--disable=servicelb"
+    - "--disable=local-storage"
+    - "--node-external-ip={{ ansible_default_ipv4.address }}"
+
+# Directories and files
+k3s_directories:
+  config: "/etc/rancher/k3s"
+  data: "/var/lib/rancher/k3s"
+  manifests: "/var/lib/rancher/k3s/server/manifests"
+
+k3s_files:
+  config: "/etc/rancher/k3s/config.yaml"
+  kubeconfig: "/etc/rancher/k3s/k3s.yaml"
+  token: "/var/lib/rancher/k3s/server/node-token"
+
+# Service configuration
+k3s_service:
+  name: "k3s"
+  enabled: true
+  state: "started"
+
+# Kubeconfig management
+kubeconfig:
+  local_path: "{{ ansible_env.HOME }}/.kube/config"
+  backup_path: "{{ ansible_env.HOME }}/kubeconfig-backup"
+  mode: "0600"
+
+# Health check configuration
+health_checks:
+  api_server:
+    url: "https://localhost:6443/healthz"
+    timeout: 30
+    retries: 10
+    delay: 5
+  
+  node_ready:
+    timeout: 300
+    retries: 30
+    delay: 10
+
+# Firewall ports for K3s master
+firewall_ports:
+  - port: 6443
+    protocol: tcp
+    description: "K3s API server"
+  - port: 10250
+    protocol: tcp
+    description: "Kubelet API"
+  - port: 8472
+    protocol: udp
+    description: "Flannel VXLAN"
+  - port: 51820
+    protocol: udp
+    description: "Flannel Wireguard (if enabled)"
+
+# Backup configuration
+backup_config:
+  enabled: true
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  retention_days: 7
+  backup_dir: "/opt/backups/k3s"
+  items:
+    - "/var/lib/rancher/k3s/server/db"
+    - "/etc/rancher/k3s"

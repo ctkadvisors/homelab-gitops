@@ -1,0 +1,27 @@
+---
+# Handlers for k3s-worker role
+
+- name: restart k3s-agent
+  systemd:
+    name: k3s-agent
+    state: restarted
+    daemon_reload: yes
+  listen: "restart k3s-agent"
+
+- name: stop k3s-agent
+  systemd:
+    name: k3s-agent
+    state: stopped
+  listen: "stop k3s-agent"
+
+- name: start k3s-agent
+  systemd:
+    name: k3s-agent
+    state: started
+  listen: "start k3s-agent"
+
+- name: reload k3s-agent
+  systemd:
+    name: k3s-agent
+    state: reloaded
+  listen: "reload k3s-agent"

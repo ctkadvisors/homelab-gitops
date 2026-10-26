@@ -1,0 +1,156 @@
+---
+# Nightly off-box backup to the Synology NAS (valhalla).
+#
+# Ships the three things a cluster rebuild actually needs and that exist
+# nowhere else:
+#   1. k3s SQLite datastore  (/var/lib/rancher/k3s/server/db/state.db)
+#   2. sealed-secrets master key (all SealedSecrets are dead without it)
+#   3. local-path PVC data   (/var/lib/rancher/k3s/storage — gitea et al.)
+#
+# ARMED 2026-09-02, on valhalla since 2026-09-03 (DSM: SSH enabled, user in
+# administrators, home service on, key in ~/.ssh/authorized_keys with the
+# home dir chmod 755 or DSM refuses key logins). Private key sealed as
+# backup/nas-ssh (nas-ssh-sealed.yaml); the same public key is also in
+# the spark's authorized_keys, so the spark is a one-line fallback target.
+#
+# ponytail: single rsync mirror, no retention/rotation — the target's
+# snapshots are the versioning layer (Synology Snapshot Replication; on
+# the spark, nothing yet).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nas-backup
+  namespace: backup
+spec:
+  schedule: "30 3 * * *"
+  suspend: false
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 7200
+      # Finished pods (including the failed first attempt behind a retry)
+      # otherwise sit in Failed forever and page KubernetesPodNotHealthy.
+      ttlSecondsAfterFinished: 21600
+      template:
+        spec:
+          serviceAccountName: nas-backup
+          restartPolicy: Never
+          # Must run on the control plane: that's where state.db and the
+          # local-path PVC data live.
+          nodeSelector:
+            node-role.kubernetes.io/control-plane: "true"
+          containers:
+            - name: backup
+              image: alpine:3.20
+              env:
+                - name: NAS_DEST
+                  # valhalla drifted .54 -> .67 on 2026-09-08 (Deco DHCP; .54 went to
+                  # another device) and the 03:30 backups refused-on-22 for a day.
+                  # Static address in DSM is the durable fix; until then this pin.
+                  # valhalla (Synology, .54): SSH enabled + key installed
+                  # 2026-09-03. The spark copy at
+                  # homelab-user@10.0.0.69:/home/homelab-user/backups/homelab/elitemini
+                  # stays as the second target if this ever drifts.
+                  value: "homelab-user@10.0.0.67:/volume1/homelab-backup/elitemini"
+                - name: FALLBACK_DEST
+                  # The spark keeps the same public key; used when the NAS refuses SSH
+                  # (2026-09-08 03:30Z: four failed runs, "connection refused" on :22).
+                  value: "homelab-user@10.0.0.69:/home/homelab-user/backups/homelab/elitemini"
+              command:
+                - /bin/sh
+                - -ec
+                - |
+                  apk add --no-cache rsync openssh-client sqlite kubectl
+                  mkdir -p /work/k3s
+                  # Consistent snapshot of the live WAL-mode db (plain cp is not safe).
+                  # VACUUM INTO, not .backup: the backup API restarts from page 0
+                  # every time another process writes the source, and k3s writes
+                  # constantly — a run on 2026-09-03 had copied 160 MB of 561 MB after
+                  # 18 minutes and would never have finished. VACUUM INTO reads one
+                  # snapshot in a single transaction. The db dir is mounted read-write
+                  # because a WAL reader must touch the -shm index.
+                  sqlite3 /host-db/state.db "VACUUM INTO '/work/k3s/state.db'"
+                  kubectl -n sealed-secrets get secret \
+                    -l sealedsecrets.bitnami.com/sealed-secrets-key=active \
+                    -o yaml > /work/k3s/sealed-secrets-key.yaml
+                  # Logical dump of the shared postgres (gateway usage, langfuse,
+                  # platform) — restorable across versions, unlike the data dir.
+                  PGPOD=$(kubectl -n database get pod -l app=postgresql -o name | head -1)
+                  kubectl -n database exec "$PGPOD" -- sh -c 'pg_dumpall -U "$POSTGRES_USER"' | gzip > /work/k3s/postgres-database.sql.gz
+                  export RSYNC_RSH="ssh -i /ssh/key -o StrictHostKeyChecking=accept-new"
+                  if ! ssh -i /ssh/key -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "${NAS_DEST%%:*}" true; then
+                    echo "NAS ${NAS_DEST%%:*} unreachable; backing up to the fallback $FALLBACK_DEST"
+                    NAS_DEST="$FALLBACK_DEST"
+                  fi
+                  ssh -i /ssh/key -o StrictHostKeyChecking=accept-new "${NAS_DEST%%:*}" "mkdir -p ${NAS_DEST#*:}"
+                  # rsync exit 24 = a file vanished mid-copy (live databases do
+                  # that); the mirror is still good, so it is not a failure.
+                  # --rsync-path: DSM's login shell resolves `rsync` to Synology's
+                  # wrapper, which answers "Permission denied, please try again"
+                  # unless the DSM rsync service is enabled. /usr/bin/rsync is the
+                  # real one (and exists on the spark too).
+                  sync_ok() { rsync -a --rsync-path=/usr/bin/rsync "$@" || [ $? -eq 24 ]; }
+                  sync_ok /work/k3s/ "$NAS_DEST/k3s/"
+                  sync_ok /host-pvc/ "$NAS_DEST/pvc/"
+                  sync_ok /host-opt/ "$NAS_DEST/opt/"
+                  echo "backup complete: $(date -Iseconds)"
+              resources:
+                requests:
+                  memory: "256Mi"
+                  cpu: "100m"
+                limits:
+                  memory: "1Gi"
+                  cpu: "500m"
+              volumeMounts:
+                - name: k3s-db
+                  mountPath: /host-db
+                  # read-write on purpose: see the sqlite3 .backup note above.
+                  readOnly: false
+                - name: pvc-data
+                  mountPath: /host-pvc
+                  readOnly: true
+                # elitemini's hostPath state that is not a PVC.
+                - name: opt-n8n
+                  mountPath: /host-opt/n8n-data
+                  readOnly: true
+                - name: opt-openwebui
+                  mountPath: /host-opt/openwebui-data
+                  readOnly: true
+                - name: opt-traefik
+                  mountPath: /host-opt/traefik-data
+                  readOnly: true
+                - name: ssh
+                  mountPath: /ssh
+                  readOnly: true
+                - name: work
+                  mountPath: /work
+          volumes:
+            - name: k3s-db
+              hostPath:
+                path: /var/lib/rancher/k3s/server/db
+                type: Directory
+            - name: pvc-data
+              hostPath:
+                path: /var/lib/rancher/k3s/storage
+                type: Directory
+            - name: opt-n8n
+              hostPath:
+                path: /opt/n8n-data
+                type: Directory
+            - name: opt-openwebui
+              hostPath:
+                path: /opt/openwebui-data
+                type: Directory
+            - name: opt-traefik
+              hostPath:
+                path: /opt/traefik-data
+                type: Directory
+            - name: ssh
+              secret:
+                secretName: nas-ssh
+                defaultMode: 0400
+            - name: work
+              emptyDir:
+                sizeLimit: 2Gi

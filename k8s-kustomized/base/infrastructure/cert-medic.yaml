@@ -1,0 +1,181 @@
+---
+# cert-medic — self-healing for the example.com wildcard certificate.
+#
+# Automates the runbook from the 2026-08-04/05 outage (docs/runbooks/
+# tls-wildcard.md): cert-manager's ACME flow can wedge when a DNS-01
+# challenge's Cloudflare TXT cleanup fails (stale record id -> empty zone
+# in the DELETE path). A wedged challenge blocks the order forever and the
+# cert eventually expires while everything looks "in progress".
+#
+# Every 6h: if the canonical Certificate is Ready, exit quietly. If it is
+# not Ready AND its ACME plumbing looks wedged (challenge or errored order
+# older than 1h), delete stray _acme-challenge TXT records via the same
+# Cloudflare token cert-manager uses, then delete the stuck challenges and
+# orders so cert-manager rebuilds them from scratch. If Let's Encrypt is
+# rate-limiting, do nothing — cert-manager retries after the window and
+# remediation would only churn.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cert-medic
+  namespace: cert-manager
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cert-medic
+  namespace: cert-manager
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["cloudflare-api-token"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cert-medic
+  namespace: cert-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cert-medic
+subjects:
+  - kind: ServiceAccount
+    name: cert-medic
+    namespace: cert-manager
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cert-medic
+  namespace: ingress-system
+rules:
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates"]
+    verbs: ["get", "list"]
+  - apiGroups: ["acme.cert-manager.io"]
+    resources: ["challenges", "orders"]
+    verbs: ["get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cert-medic
+  namespace: ingress-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cert-medic
+subjects:
+  - kind: ServiceAccount
+    name: cert-medic
+    namespace: cert-manager
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cert-medic-script
+  namespace: cert-manager
+data:
+  medic.sh: |
+    #!/bin/sh
+    set -u
+    NS=ingress-system
+    CERT=example-tls
+    ZONE=example.com
+
+    ready=$(kubectl get certificate -n "$NS" "$CERT" \
+      -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+    if [ "$ready" = "True" ]; then
+      echo "[medic] $CERT Ready — nothing to do"
+      exit 0
+    fi
+    echo "[medic] $CERT not Ready (status=$ready) — inspecting"
+
+    orders=$(kubectl get orders -n "$NS" --no-headers 2>/dev/null || true)
+    challenges=$(kubectl get challenges -n "$NS" --no-headers 2>/dev/null || true)
+    echo "[medic] orders:"; echo "$orders"
+    echo "[medic] challenges:"; echo "$challenges"
+
+    # Rate-limited? cert-manager honors the retry window; remediation would
+    # only burn more quota. Stand down.
+    if kubectl get orders -n "$NS" -o jsonpath='{.items[*].status.reason}' 2>/dev/null \
+        | grep -qi "rateLimited"; then
+      echo "[medic] Let's Encrypt rate limit active — standing down, cert-manager retries after the window"
+      exit 0
+    fi
+
+    # Only remediate when something is actually wedged: any challenge, or
+    # an errored/invalid order, older than ~1h (AGE column ends h/d).
+    wedged=""
+    echo "$challenges" | awk '$NF ~ /[hd]$/ {found=1} END {exit !found}' && wedged=yes
+    echo "$orders" | awk '$2 ~ /errored|invalid/ && $NF ~ /[hd]$/ {found=1} END {exit !found}' && wedged=yes
+    if [ -z "$wedged" ]; then
+      echo "[medic] not Ready but nothing wedged >1h — letting cert-manager work"
+      exit 0
+    fi
+
+    echo "[medic] wedged ACME state detected — running cleanup"
+    TOKEN=$(cat /var/run/cf/api-token)
+    api() { curl -sS -m 15 -H "Authorization: Bearer $TOKEN" "$@"; }
+    zone_id=$(api "https://api.cloudflare.com/client/v4/zones?name=$ZONE" \
+      | sed -n 's/.*"id":"\([a-f0-9]\{32\}\)".*/\1/p' | head -1)
+    if [ -n "$zone_id" ]; then
+      for rec_name in "_acme-challenge.$ZONE" "_acme-challenge.apps.$ZONE"; do
+        ids=$(api "https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records?type=TXT&name=$rec_name" \
+          | tr ',' '\n' | sed -n 's/.*"id":"\([a-f0-9]\{32\}\)".*/\1/p')
+        for id in $ids; do
+          echo "[medic] deleting stray TXT $rec_name ($id)"
+          api -X DELETE "https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records/$id" >/dev/null
+        done
+      done
+    else
+      echo "[medic] WARN: could not resolve zone id — skipping TXT cleanup"
+    fi
+
+    kubectl delete challenges -n "$NS" --all --wait=false 2>/dev/null || true
+    kubectl delete orders -n "$NS" --all --wait=false 2>/dev/null || true
+    echo "[medic] stuck challenges/orders cleared — cert-manager will rebuild the order"
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cert-medic
+  namespace: cert-manager
+spec:
+  schedule: "17 */6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      ttlSecondsAfterFinished: 172800
+      template:
+        spec:
+          serviceAccountName: cert-medic
+          restartPolicy: Never
+          containers:
+            - name: medic
+              image: alpine/k8s:1.31.2
+              command: ["/bin/sh", "/medic/medic.sh"]
+              resources:
+                requests: { cpu: 10m, memory: 32Mi }
+                limits: { cpu: 100m, memory: 64Mi }
+              volumeMounts:
+                - name: script
+                  mountPath: /medic
+                - name: cf-token
+                  mountPath: /var/run/cf
+                  readOnly: true
+          volumes:
+            - name: script
+              configMap:
+                name: cert-medic-script
+            - name: cf-token
+              secret:
+                secretName: cloudflare-api-token
+                items:
+                  - key: api-token
+                    path: api-token

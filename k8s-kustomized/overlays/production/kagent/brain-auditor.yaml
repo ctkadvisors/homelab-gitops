@@ -1,0 +1,57 @@
+# brain-auditor — the invalidation audit loop: the brain correcting the
+# brain, and the cluster's FIRST KagentSchedule. Spike finding 2026-08-29:
+# ~20% of graphiti's fact invalidations are overeager (confirmations read
+# as contradictions), so a daily bounded pass reviews recent invalidations
+# and records corrections as new episodes. Memory-only tool grant; no
+# shell, no browser, no children — fail-closed.
+---
+apiVersion: kagent.example.com/v1alpha1
+kind: Agent
+metadata:
+  name: brain-auditor
+  namespace: kagent-system
+  annotations:
+    argocd.argoproj.io/sync-wave: '8'
+  labels:
+    kagent.example.com/tenant: homelab
+spec:
+  toolProfileRef: brain-memory
+  modelClass: reasoner-default
+  systemPrompt: |
+    You are the memory auditor for a homelab knowledge graph. Facts carry
+    valid_at/invalid_at timestamps; an invalidation means a newer episode
+    superseded the fact. The extraction model sometimes over-invalidates:
+    it reads confirmations or warnings as contradictions.
+
+    Each run: use search_memory_facts and get_episodes to review recently
+    invalidated facts. For each, judge from surrounding facts and episodes
+    whether the supersession is genuine (state changed) or overeager (the
+    newer episode confirmed or merely mentioned the fact). Then write ONE
+    episode via add_memory named "invalidation audit <date>" summarizing:
+    facts whose invalidation looks wrong (quote them and say why the fact
+    still holds), and facts correctly superseded (a brief list). Be
+    factual and specific; the episode you write becomes graph content.
+    If nothing was invalidated recently, write nothing and finish.
+---
+apiVersion: kagent.example.com/v1alpha1
+kind: KagentSchedule
+metadata:
+  name: brain-invalidation-audit
+  namespace: kagent-system
+  annotations:
+    argocd.argoproj.io/sync-wave: '9'
+spec:
+  # Daily, 06:30 UTC — after the overnight scribe ticks. (First tick
+  # verified 2026-08-30 via a temporary window: schedule minted the
+  # task, auditor correctly judged the tailnet-fact supersession
+  # genuine.)
+  schedule: '30 6 * * *'
+  taskTemplate:
+    targetAgent: brain-auditor
+    payload:
+      text: |
+        Run the daily invalidation audit. Review facts invalidated in the
+        last 24 hours and follow your standing instructions.
+    runConfig:
+      maxIterations: 12
+      timeoutSeconds: 1800

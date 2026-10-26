@@ -1,0 +1,235 @@
+---
+# Compute Workers Group Variables
+# High-performance x86_64 nodes for compute-intensive workloads
+
+# Node Configuration
+compute_worker:
+  # K3s agent configuration
+  install_options:
+    - "--node-label=node-type={{ node_type }}"
+    - "--node-label=amd.com/gpu=true"
+    - "--node-label=gpu-type={{ gpu_type }}"
+    - "--node-label=compute-intensive=true"
+    - "--node-label=architecture={{ architecture }}"
+  
+  # Performance optimizations
+  performance:
+    cpu_governor: "performance"
+    scaling_governor: "performance"
+    turbo_boost: true
+    
+  # System optimizations
+  system_optimizations:
+    vm_swappiness: 10
+    vm_dirty_ratio: 15
+    vm_dirty_background_ratio: 5
+    net_core_rmem_max: 134217728
+    net_core_wmem_max: 134217728
+
+# Node Labels and Taints
+node_labels:
+  - "node-type=compute-worker"
+  - "amd.com/gpu=true"
+  - "gpu-type=amd"
+  - "compute-intensive=true"
+  - "kubernetes.io/hostname={{ inventory_hostname }}"
+  - "kubernetes.io/arch={{ architecture }}"
+
+# No taints - allow all workloads
+node_taints: []
+
+# Data Directories for Compute Worker Services
+data_directories:
+  - path: "/opt/monitoring-data"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0755"
+    description: "Prometheus and Grafana data"
+  
+  - path: "/opt/automation-data"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0755"
+    description: "n8n and automation workflows"
+  
+  - path: "/opt/vector-db-data"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0755"
+    description: "Vector database storage"
+  
+  - path: "/opt/backup-data"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0755"
+    description: "Backup and restore data"
+  
+  - path: "{{ ssl.cert_dir }}"
+    owner: "root"
+    group: "root"
+    mode: "0755"
+    description: "SSL certificates directory"
+
+# Service Configuration for Compute Workers
+services:
+  # Monitoring stack
+  monitoring:
+    prometheus_enabled: true
+    grafana_enabled: true
+    node_exporter_enabled: true
+    alertmanager_enabled: true
+    
+  # Automation services
+  automation:
+    n8n_enabled: true
+    webhook_enabled: true
+    
+  # Vector database
+  vector_db:
+    qdrant_enabled: true
+    chromadb_enabled: false
+    
+  # Backup services
+  backup:
+    velero_enabled: true
+    restic_enabled: true
+
+# AMD GPU Configuration
+amd_gpu:
+  # ROCm configuration
+  rocm:
+    enabled: true
+    version: "latest"
+    install_packages:
+      - "rocm-dev"
+      - "rocm-libs"
+      - "rocm-utils"
+      
+  # GPU memory management
+  memory:
+    total: "512Mi"      # Radeon 760M shared memory
+    reserved: "128Mi"   # Reserved for system
+    available: "384Mi"  # Available for workloads
+    
+  # GPU compute allocation
+  compute:
+    compute_units: 8    # Radeon 760M compute units
+    
+  # Power management
+  power:
+    max_power: "25W"    # Integrated GPU power
+    thermal_throttle: "90C"
+
+# Resource Limits for Compute Worker
+resource_limits:
+  # High-performance limits for x86_64
+  cpu:
+    reserved: "1000m"   # Reserve 1 CPU core for system
+    available: "11000m" # 11 cores available for workloads
+  
+  memory:
+    reserved: "2Gi"     # Reserve 2GB for system
+    available: "12Gi"   # 12GB available for workloads
+  
+  storage:
+    root_reserved: "10Gi"  # Reserve space on root filesystem
+    data_available: "400Gi" # Available for application data
+
+# Container Optimizations for Compute Workloads
+container_optimizations:
+  # Shared memory size for compute workloads
+  shm_size: "4g"
+  
+  # Security context for GPU access
+  security_context:
+    privileged: false
+    capabilities:
+      add:
+        - "SYS_ADMIN"  # For GPU access
+        
+  # Resource requests and limits
+  default_resources:
+    requests:
+      memory: "2Gi"
+      cpu: "1000m"
+    limits:
+      memory: "8Gi"
+      cpu: "4000m"
+
+# Storage Configuration for Compute Nodes
+compute_storage:
+  # High-performance storage optimization
+  data_storage:
+    path: "/opt"
+    filesystem: "ext4"
+    mount_options: "noatime,nodiratime"
+    
+  # Temporary storage for compute workloads
+  tmp_storage:
+    path: "/tmp/compute-workloads"
+    size: "20Gi"
+    cleanup_schedule: "0 3 * * *"  # Daily cleanup at 3 AM
+
+# Network Optimizations for Compute Nodes
+compute_networking:
+  # High-performance networking
+  network_optimizations:
+    tcp_window_scaling: true
+    tcp_congestion_control: "bbr"
+    net_core_rmem_max: 134217728
+    net_core_wmem_max: 134217728
+    
+  # Compute-specific ports
+  compute_ports:
+    - port: 9090
+      protocol: tcp
+      description: "Prometheus"
+    - port: 3000
+      protocol: tcp
+      description: "Grafana"
+    - port: 6333
+      protocol: tcp
+      description: "Qdrant API"
+    - port: 6334
+      protocol: tcp
+      description: "Qdrant gRPC"
+    - port: 8000
+      protocol: tcp
+      description: "Vector DB API"
+
+# Backup Configuration for Compute Nodes
+compute_backup:
+  # Data backup strategy
+  data:
+    enabled: true
+    schedule: "0 2 * * *"  # Daily at 2 AM
+    retention: 7
+    compression: true
+    
+  # Configuration backup
+  config:
+    enabled: true
+    schedule: "0 1 * * 0"  # Weekly on Sunday at 1 AM
+    include:
+      - "/opt"
+      - "/etc/kubernetes"
+      - "/etc/rancher"
+
+# Monitoring Configuration
+monitoring_config:
+  # Metrics collection
+  metrics:
+    cpu_threshold: 80
+    memory_threshold: 85
+    disk_threshold: 90
+    
+  # Alerting
+  alerts:
+    enabled: true
+    webhook_url: "https://n8n.homelab/webhook/alerts"
+    
+  # Log aggregation
+  logging:
+    enabled: true
+    retention: "30d"
+    level: "info"

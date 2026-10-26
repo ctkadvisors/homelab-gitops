@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: dashboard
+
+resources:
+  - ../../../base/dashboard
+
+patches:
+  - path: mcpo-elitemini.yaml
+  # Move homepage to EliteMini control plane
+  - target:
+      kind: Deployment
+      name: homepage
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/nodeSelector
+        value:
+          node-role.kubernetes.io/control-plane: "true"

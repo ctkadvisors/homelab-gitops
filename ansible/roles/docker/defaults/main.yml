@@ -1,0 +1,107 @@
+---
+# Default variables for docker role
+
+# Docker Configuration
+docker:
+  # Installation
+  version: "{{ docker_version | default('latest') }}"
+  edition: "ce"  # Community Edition
+  
+  # Repository configuration
+  repo:
+    url: "https://download.docker.com/linux/ubuntu"
+    gpg_key: "https://download.docker.com/linux/ubuntu/gpg"
+    
+  # Service configuration
+  service:
+    enabled: true
+    state: started
+    
+  # Users to add to docker group
+  users: "{{ docker_users | default([ansible_user]) }}"
+  
+  # Docker daemon configuration
+  daemon_config:
+    log_driver: "json-file"
+    log_opts:
+      max_size: "10m"
+      max_file: "3"
+    storage_driver: "overlay2"
+    exec_opts:
+      - "native.cgroupdriver=systemd"
+    features:
+      buildkit: true
+    experimental: false
+    live_restore: true
+    userland_proxy: false
+    
+  # Docker Compose
+  compose:
+    enabled: true
+    version: "2.20.0"  # Adjust as needed
+
+# NVIDIA Container Runtime (for GPU nodes)
+nvidia_runtime:
+  enabled: "{{ nvidia_runtime_enabled | default(false) }}"
+  version: "{{ nvidia_container_toolkit_version | default('latest') }}"
+  
+  # Repository configuration
+  repo:
+    url: "https://nvidia.github.io/libnvidia-container"
+    gpg_key: "https://nvidia.github.io/libnvidia-container/gpgkey"
+    
+  # Runtime configuration
+  runtime_config:
+    default_runtime: "nvidia"
+    runtimes:
+      nvidia:
+        path: "/usr/bin/nvidia-container-runtime"
+        runtimeArgs: []
+
+# Container Optimizations
+container_optimizations:
+  # Kernel modules
+  kernel_modules:
+    - overlay
+    - br_netfilter
+    
+  # Sysctl parameters
+  sysctl_params:
+    net.bridge.bridge-nf-call-iptables: 1
+    net.bridge.bridge-nf-call-ip6tables: 1
+    net.ipv4.ip_forward: 1
+    
+  # Limits
+  limits:
+    nofile: 65536
+    nproc: 65536
+
+# Security Configuration
+security:
+  # Docker daemon security
+  daemon_security:
+    userns_remap: false  # Disable for K3s compatibility
+    no_new_privileges: true
+    seccomp_profile: "default"
+    
+  # Image security
+  image_security:
+    content_trust: false  # Enable in production
+    
+# Cleanup Configuration
+cleanup:
+  enabled: true
+  schedule: "0 3 * * 0"  # Weekly on Sunday at 3 AM
+  
+  # What to clean up
+  cleanup_items:
+    - containers: true
+    - images: true
+    - volumes: true
+    - networks: true
+    - build_cache: true
+    
+  # Retention policies
+  retention:
+    unused_images_days: 7
+    stopped_containers_days: 1

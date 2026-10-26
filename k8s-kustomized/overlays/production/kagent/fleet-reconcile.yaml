@@ -1,0 +1,225 @@
+# fleet-reconcile — the fleet's one scheduler (services/fleet-scripts/
+# scripts/reconcile.py). Every five minutes it reads six signals (spark
+# capacity, fleet Jobs, AgentTasks, CI runner pods, chat quiet, webhook
+# quiet), all stamped and fail-closed, keeps an idle streak in the ledger,
+# and when the fleet has been idle for IDLE_MINUTES within the daily
+# budget, starts one improve run from the improve-daily CronJob's template
+# (RUN_TRIGGER=idle, its own branch). Holds the ledger lease while it
+# decides, so it and the 05:15 cron cannot double-launch.
+#
+# Chris, 2026-09-04: "an idle watcher (as opposed to a cron)"; Codex's
+# review: one durable scheduler, not a thread in the webhook receiver.
+# The knobs (BUDGET_PER_DAY, MIN_GAP_MINUTES, IDLE_MINUTES) are the
+# console's steering; they change here, through a PR.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fleet-reconcile
+  namespace: kagent-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: fleet-reconcile
+  namespace: kagent-system
+rules:
+  - apiGroups: ["batch"]
+    resources: ["cronjobs"]
+    verbs: ["get"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    # delete: a mission still working a PR's branch is stopped when the fleet closes that PR (stop_missions_on)
+    verbs: ["get", "list", "create", "delete"]
+  # Self-repair (2026-09-06): each tick reads its own namespace's failed pods to
+  # notice when the fleet itself is dying (exec format error, Init:Error).
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+  # Self-observation (2026-09-16): each tick reads the last hour of its own
+  # long-running pods' logs for error lines and stores new ones as facts the
+  # ideator sees (reconcile.observe_pods). The Telegram adapter logged
+  # "rejected ... HTTP 400" for four days before a human read it.
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: fleet-reconcile
+  namespace: kagent-system
+subjects:
+  - kind: ServiceAccount
+    name: fleet-reconcile
+    namespace: kagent-system
+roleRef:
+  kind: Role
+  name: fleet-reconcile
+  apiGroup: rbac.authorization.k8s.io
+---
+# Cross-namespace, read-only: AgentTasks anywhere, runner pods in arc-runners.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fleet-reconcile-observe
+rules:
+  - apiGroups: ["kagent.example.com"]
+    resources: ["agenttasks"]
+    verbs: ["list"]
+  # ghost nodes (tidy_nodes): a cordoned NotReady non-amd64 node is handed to
+  # the node runner for deletion. Reading is enough here; the runner deletes.
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fleet-reconcile-observe
+subjects:
+  - kind: ServiceAccount
+    name: fleet-reconcile
+    namespace: kagent-system
+roleRef:
+  kind: ClusterRole
+  name: fleet-reconcile-observe
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: fleet-reconcile-runners
+  namespace: arc-runners
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "delete"]   # delete: a runner Pending > 20 min is a hung Kata start (reconcile.clear_stuck_runners)
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: fleet-reconcile-runners
+  namespace: arc-runners
+subjects:
+  - kind: ServiceAccount
+    name: fleet-reconcile
+    namespace: kagent-system
+roleRef:
+  kind: Role
+  name: fleet-reconcile-runners
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: fleet-reconcile
+  namespace: kagent-system
+  labels:
+    app: fleet-reconcile
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 240
+      ttlSecondsAfterFinished: 600
+      template:
+        metadata:
+          labels:
+            app: fleet-reconcile
+        spec:
+          restartPolicy: Never
+          serviceAccountName: fleet-reconcile
+          enableServiceLinks: false
+          containers:
+            - name: reconcile
+              image: git.example.com/homelab/fleet-scripts:20260916-366f92e
+              command: ["python3", "/app/scripts/reconcile.py"]
+              env:
+                - { name: POD_NAMESPACE, value: kagent-system }
+                - { name: SPARK_METRICS_URL, value: "http://spark-llamaswap.ai-services.svc.cluster.local:9090/metrics" }
+                - { name: SPARK_BUSY_UTIL, value: "10" }
+                - { name: IDLE_MINUTES, value: "10" }
+                - { name: BUDGET_PER_DAY, value: "24" }        # Chris, 2026-09-12: "whenever it's idle"; the idle streak is the gate, not a count
+                - { name: MIN_GAP_MINUTES, value: "10" }        # was 120: the fleet sat parked for two hours after every run
+                - { name: QUIET_MINUTES, value: "30" }
+                - { name: REPO, value: ctkadvisors/new_localai }    # default when no fleet problems are open; choose_repo() follows them. Three kagent runs on 09-07 found nothing
+                - { name: FLEET_REPO, value: ctkadvisors/new_localai }  # where repair missions are filed (the fleet's own code)
+                - { name: REPAIR_AFTER, value: "2" }               # same own failure twice in an hour -> repair mission
+                - { name: PAUSE_AFTER, value: "6" }                # own failures in an hour -> pause launches
+                - { name: PAUSE_MINUTES, value: "60" }
+                - { name: TELEGRAM_CHAT_ID, value: "0" }
+                - { name: JUDGE_URL, value: "http://spark-llamaswap.ai-services.svc.cluster.local:9090/v1" }   # reconcile.ideate asks the judge for ideas
+                - { name: JUDGE_MODEL, value: "qwen38" }
+                - { name: JUDGE_MAX_TOKENS, value: "16384" }   # thinking + a full verdict; 8192 was cut short
+                - { name: JUDGE_DIFF_CHARS, value: "120000" }
+              resources:
+                requests: { cpu: 20m, memory: 64Mi }
+                limits: { cpu: 500m, memory: 512Mi }   # the fan-out ideator holds four judge prompts and their evidence (137 at 128Mi, 2026-09-09)
+              volumeMounts:
+                - { name: ledger, mountPath: /secrets/ledger, readOnly: true }
+                # merge_due(): land announced PRs whose veto window closed (App token + Telegram notice).
+                - { name: github-app, mountPath: /secrets/github-app, readOnly: true }
+                - { name: telegram, mountPath: /secrets/telegram, readOnly: true }
+          volumes:
+            - name: ledger
+              secret:
+                secretName: fleet-ledger-dsn
+            - name: github-app
+              secret:
+                secretName: github-app
+            - name: telegram
+              secret:
+                secretName: kagent-telegram-bot-token
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fleet-reconcile
+  namespace: kagent-system
+spec:
+  podSelector:
+    matchLabels:
+      app: fleet-reconcile
+  policyTypes: [Egress]
+  egress:
+    - to: []
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to: []                              # the API server
+      ports:
+        - { protocol: TCP, port: 443 }
+        - { protocol: TCP, port: 6443 }
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: database
+      ports:
+        - { protocol: TCP, port: 5432 }
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.69/32         # the spark: llama-swap /metrics (Endpoints of spark-llamaswap)
+      ports:
+        - { protocol: TCP, port: 9090 }
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: kagent-workbench
+      ports:
+        - { protocol: TCP, port: 8080 }   # the pod's api port (Service 80 -> 8080); netpol ports are pod ports
+    - to:
+        - podSelector:
+            matchLabels:
+              app: mission-launcher
+      ports:
+        - { protocol: TCP, port: 8080 }   # board-first: relaunch a halted mission before an improve run
+    - to:
+        - podSelector:
+            matchLabels:
+              app: fleet-node-runner
+      ports:
+        - { protocol: TCP, port: 8080 }   # ghost nodes: delete a cordoned NotReady non-amd64 node

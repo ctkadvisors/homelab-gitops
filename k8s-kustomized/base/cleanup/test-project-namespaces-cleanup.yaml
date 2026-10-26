@@ -1,0 +1,91 @@
+# Test Project Namespaces Cleanup
+# This manifest defines the test namespaces that should be removed
+# These are legacy test projects that are either failing or no longer needed
+#
+# Usage: kubectl delete -f test-project-namespaces-cleanup.yaml
+#
+# IMPORTANT: This will permanently delete:
+# - All pods, services, deployments in these namespaces  
+# - All secrets, configmaps, and persistent volume claims
+# - The namespaces themselves
+#
+# Namespaces to be removed:
+# 1. platform-test-app - CrashLoopBackOff (exec format error)
+# 2. project-supatest2 - CreateContainerConfigError (missing secrets)  
+# 3. project-supatest3 - CrashLoopBackOff (database connection errors)
+# 4. project-autotest - Working but test project, no longer needed
+# 5. project-supatest - Working but test project, no longer needed
+# 6. project-teeets - Working but test project, no longer needed
+# 7. project-testproject - Working but test project, no longer needed
+#
+# PRESERVED: platform, platform-builds (these are production namespaces)
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: platform-test-app
+  annotations:
+    cleanup.homelab.io/reason: "CrashLoopBackOff - exec format error"
+    cleanup.homelab.io/status: "failed"
+    cleanup.homelab.io/age: "35d"
+
+---
+apiVersion: v1
+kind: Namespace  
+metadata:
+  name: project-supatest2
+  annotations:
+    cleanup.homelab.io/reason: "CreateContainerConfigError - missing secrets"
+    cleanup.homelab.io/status: "failed" 
+    cleanup.homelab.io/age: "35d"
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: project-supatest3
+  annotations:
+    cleanup.homelab.io/reason: "CrashLoopBackOff - database connection errors"
+    cleanup.homelab.io/status: "failed"
+    cleanup.homelab.io/age: "35d"
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: project-autotest
+  annotations:
+    cleanup.homelab.io/reason: "Test project no longer needed"
+    cleanup.homelab.io/status: "working-but-obsolete"
+    cleanup.homelab.io/age: "35d"
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: project-supatest
+  annotations:
+    cleanup.homelab.io/reason: "Test project no longer needed"
+    cleanup.homelab.io/status: "working-but-obsolete"
+    cleanup.homelab.io/age: "35d"
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: project-teeets
+  annotations:
+    cleanup.homelab.io/reason: "Test project no longer needed"
+    cleanup.homelab.io/status: "working-but-obsolete"
+    cleanup.homelab.io/age: "35d"
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: project-testproject
+  annotations:
+    cleanup.homelab.io/reason: "Test project no longer needed"
+    cleanup.homelab.io/status: "working-but-obsolete"
+    cleanup.homelab.io/age: "35d"

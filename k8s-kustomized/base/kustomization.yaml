@@ -1,0 +1,76 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: local-ai-homelab-base
+  annotations:
+    config.kubernetes.io/local-config: "true"
+    description: "Base configuration for Local AI Homelab"
+
+# Base resources from subdirectories
+resources:
+  - networking/
+  - infrastructure/
+  - ai-services/
+  - automation/
+  - dashboard/
+  - vector-db/
+  - ml-registry/
+  - search/
+  - storage/
+  - buildkit/
+  - backup/
+
+# Common labels applied to ALL resources
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: local-ai-homelab
+      app.kubernetes.io/managed-by: kustomize
+      app.kubernetes.io/version: "2.0.0"
+      environment: production
+
+# Common annotations applied to ALL resources
+commonAnnotations:
+  config.kubernetes.io/origin: |
+    path: k8s-kustomized/base/kustomization.yaml
+    repo: local-ai-homelab
+  homelab.local/managed-by: "ansible-kustomize"
+
+# Global configuration
+# Note: ConfigMaps are defined in individual service directories
+# to ensure proper namespace assignment and avoid conflicts
+
+# Global patches for security and best practices
+patches:
+  # Add security context to all deployments
+  - target:
+      kind: Deployment
+    patch: |-
+      - op: add
+        path: /spec/template/spec/securityContext
+        value:
+          fsGroup: 1000
+          runAsNonRoot: false
+
+  # Add resource requests to all containers (if not already present)
+  # Commented out to avoid conflicts with existing resource definitions
+  # - target:
+  #     kind: Deployment
+  #   patch: |-
+  #     - op: add
+  #       path: /spec/template/spec/containers/0/resources/requests
+  #       value:
+  #         memory: "128Mi"
+  #         cpu: "100m"
+
+# Namespace creation order (ensures namespaces exist before resources)
+# namespace: default  # Commented out to allow explicit namespace definitions
+
+# Validation and generation options
+generatorOptions:
+  disableNameSuffixHash: false
+  labels:
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    config.kubernetes.io/local-config: "true"

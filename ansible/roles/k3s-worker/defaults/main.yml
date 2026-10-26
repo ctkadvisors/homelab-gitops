@@ -1,0 +1,66 @@
+---
+# Default variables for k3s-worker role
+
+# K3s Worker Configuration
+k3s_worker_config:
+  # Installation
+  version: "{{ k3s.version | default('v1.32.5+k3s1') }}"
+  channel: "{{ k3s.channel | default('stable') }}"
+  install_dir: "{{ k3s.install_dir | default('/usr/local/bin') }}"
+  
+  # Server connection
+  server_url: "https://{{ groups['k3s_masters'][0] }}:6443"
+  
+  # Additional arguments
+  extra_args:
+    - "--node-external-ip={{ ansible_default_ipv4.address }}"
+    - "--node-label=node-type={{ node_type | default('worker') }}"
+
+# Directories and files
+k3s_directories:
+  config: "/etc/rancher/k3s"
+  data: "/var/lib/rancher/k3s"
+
+k3s_files:
+  config: "/etc/rancher/k3s/config.yaml"
+  token: "/var/lib/rancher/k3s/server/node-token"
+
+# Service configuration
+k3s_service:
+  name: "k3s-agent"
+  enabled: true
+  state: "started"
+
+# Health check configuration
+health_checks:
+  kubelet:
+    url: "http://localhost:10248/healthz"
+    timeout: 30
+    retries: 10
+    delay: 5
+  
+  node_ready:
+    timeout: 300
+    retries: 30
+    delay: 10
+
+# Firewall ports for K3s worker
+firewall_ports:
+  - port: 10250
+    protocol: tcp
+    description: "Kubelet API"
+  - port: 10256
+    protocol: tcp
+    description: "Kube-proxy health check"
+  - port: 8472
+    protocol: udp
+    description: "Flannel VXLAN"
+  - port: 51820
+    protocol: udp
+    description: "Flannel Wireguard (if enabled)"
+
+# Token retrieval configuration
+token_retrieval:
+  max_retries: 10
+  retry_delay: 10
+  timeout: 30

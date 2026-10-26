@@ -1,0 +1,131 @@
+---
+# Programmatic OS updates for all homelab nodes (minis + jetsons).
+#
+#   cd ansible && ansible-playbook playbooks/os-updates.yml
+#
+# What it does:
+#   1. apt update + safe upgrade (config-preserving, respects apt-mark holds —
+#      the nvidia container toolkit and the full L4T BSP are deliberately held
+#      on the Jetsons; do not unhold without testing GPU workloads).
+#   2. Ensures unattended-upgrades applies security patches daily, never
+#      auto-reboots (reboots are manual + staggered on k8s nodes).
+#   3. Installs /usr/local/bin/apt-metrics.sh + cron (every 30 min) writing
+#      apt_upgrades_pending / apt_security_upgrades_pending /
+#      node_reboot_required to the node_exporter textfile collector, feeding
+#      the os-hygiene Prometheus alerts (delivered via Telegram).
+#
+# It never reboots anything. Reboot when HostRebootRequired fires:
+# workers first, control-plane last, one at a time.
+- name: OS updates, auto-patching, apt metrics
+  hosts: k3s_masters:k3s_workers:nemotron_hosts
+  become: true
+  vars:
+    textfile_dir: /var/lib/node_exporter/textfile_collector
+  handlers:
+    - name: restart node_exporter
+      ansible.builtin.systemd:
+        name: node_exporter
+        state: restarted
+        daemon_reload: true
+  tasks:
+    - name: Refresh apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Apply pending upgrades (config-preserving, respects holds)
+      ansible.builtin.apt:
+        upgrade: safe
+        dpkg_options: force-confdef,force-confold
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+
+    - name: Ensure unattended-upgrades is installed
+      ansible.builtin.apt:
+        name: unattended-upgrades
+        state: present
+
+    - name: Enable daily security auto-patching
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+          APT::Periodic::AutocleanInterval "7";
+        mode: "0644"
+
+    - name: Never auto-reboot; clean up unused deps
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/51unattended-upgrades-homelab
+        content: |
+          Unattended-Upgrade::Automatic-Reboot "false";
+          Unattended-Upgrade::Remove-Unused-Dependencies "true";
+        mode: "0644"
+
+    - name: Create textfile collector dir
+      ansible.builtin.file:
+        path: "{{ textfile_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Install apt metrics script
+      ansible.builtin.copy:
+        dest: /usr/local/bin/apt-metrics.sh
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          # Writes apt/reboot metrics for the node_exporter textfile collector.
+          # Installed by ansible/playbooks/os-updates.yml — edit there, not here.
+          set -u
+          dir={{ textfile_dir }}
+          tmp=$(mktemp)
+          sim=$(apt-get -s -o Debug::NoLocking=1 upgrade 2>/dev/null)
+          total=$(grep -c '^Inst' <<<"$sim")
+          sec=$(grep '^Inst' <<<"$sim" | grep -ci security)
+          reboot=0; [ -f /var/run/reboot-required ] && reboot=1
+          cat > "$tmp" <<EOF
+          # HELP apt_upgrades_pending Pending package upgrades.
+          # TYPE apt_upgrades_pending gauge
+          apt_upgrades_pending $total
+          # HELP apt_security_upgrades_pending Pending security upgrades.
+          # TYPE apt_security_upgrades_pending gauge
+          apt_security_upgrades_pending $sec
+          # HELP node_reboot_required 1 if /var/run/reboot-required exists.
+          # TYPE node_reboot_required gauge
+          node_reboot_required $reboot
+          # HELP apt_metrics_timestamp_seconds Last successful apt-metrics run.
+          # TYPE apt_metrics_timestamp_seconds gauge
+          apt_metrics_timestamp_seconds $(date +%s)
+          EOF
+          mv "$tmp" "$dir/apt.prom"
+          chmod 644 "$dir/apt.prom"
+
+    - name: Cron apt metrics every 30 min
+      ansible.builtin.cron:
+        name: apt-metrics
+        minute: "*/30"
+        job: /usr/local/bin/apt-metrics.sh
+        user: root
+
+    - name: Run metrics script now
+      ansible.builtin.command: /usr/local/bin/apt-metrics.sh
+      changed_when: false
+
+    # Bare-metal node_exporter (jetson1) runs --collector.disable-defaults;
+    # k8s nodes get textfile via the node-exporter DaemonSet arg instead.
+    - name: Enable textfile collector in bare-metal node_exporter unit
+      ansible.builtin.replace:
+        path: /etc/systemd/system/node_exporter.service
+        regexp: '--collector\.disable-defaults (?!--collector\.textfile )'
+        replace: '--collector.disable-defaults --collector.textfile --collector.textfile.directory={{ textfile_dir }} '
+      when: "'nemotron_hosts' in group_names"
+      notify: restart node_exporter
+
+    - name: Report reboot-required
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: rr
+
+    - name: Reboot status
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }}: reboot {{ 'REQUIRED' if rr.stat.exists else 'not needed' }}"

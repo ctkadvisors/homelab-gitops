@@ -1,0 +1,210 @@
+---
+# Main tasks for jetson-optimization role
+
+- name: Display Jetson optimization information
+  debug:
+    msg:
+      - "Optimizing Jetson performance on {{ inventory_hostname }}"
+      - "Target platform: {{ jetson_platform }}"
+      - "Performance mode: {{ jetson_performance.mode }}"
+      - "Power mode: {{ jetson_performance.power_mode }}"
+  tags: always
+
+# Platform Detection
+- name: Detect Jetson platform
+  include_tasks: detect_platform.yml
+  when: jetson_platform == "auto"
+  tags: detection
+
+- name: Set platform-specific variables
+  set_fact:
+    current_platform_settings: "{{ platform_settings[detected_platform | default(jetson_platform)] | default(platform_settings.orin_nano) }}"
+  tags: detection
+
+# Prerequisites
+- name: Install Jetson optimization tools
+  apt:
+    name:
+      - jetson-stats
+      - nvidia-jetpack
+      - python3-pip
+    state: present
+    update_cache: yes
+  tags: packages
+
+- name: Install jtop (Jetson stats)
+  pip:
+    name: jetson-stats
+    state: present
+  when: jtop.install
+  tags: packages
+
+# Performance Optimization
+- name: Configure CPU governor
+  shell: |
+    echo {{ jetson_performance.cpu_governor }} | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+  tags: performance
+
+- name: Set CPU frequency scaling
+  shell: |
+    echo {{ current_platform_settings.cpu_max_freq }} | tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_max_freq
+  when: current_platform_settings.cpu_max_freq is defined
+  tags: performance
+
+- name: Configure power mode
+  shell: |
+    nvpmodel -m {{ jetson_performance.power_mode }}
+  register: nvpmodel_result
+  failed_when: false
+  tags: performance
+
+- name: Display power mode configuration result
+  debug:
+    msg: "Power mode configuration: {{ 'SUCCESS' if nvpmodel_result.rc == 0 else 'FAILED - ' + nvpmodel_result.stderr }}"
+  tags: performance
+
+# GPU Configuration
+- name: Enable GPU persistence mode
+  shell: |
+    nvidia-smi -pm 1
+  register: gpu_persistence_result
+  failed_when: false
+  when: cuda_config.persistence_mode
+  tags: gpu
+
+- name: Set GPU power limit
+  shell: |
+    nvidia-smi -pl {{ current_platform_settings.max_power }}
+  register: gpu_power_result
+  failed_when: false
+  when: current_platform_settings.max_power is defined
+  tags: gpu
+
+# System Optimizations
+- name: Configure memory management
+  sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: yes
+  loop:
+    - { key: "vm.swappiness", value: "{{ system_optimizations.memory.swappiness }}" }
+    - { key: "vm.dirty_ratio", value: "{{ system_optimizations.memory.dirty_ratio }}" }
+    - { key: "vm.dirty_background_ratio", value: "{{ system_optimizations.memory.dirty_background_ratio }}" }
+  tags: optimization
+
+- name: Configure network optimizations
+  sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: yes
+  loop:
+    - { key: "net.ipv4.tcp_congestion_control", value: "{{ system_optimizations.network.tcp_congestion_control }}" }
+    - { key: "net.ipv4.tcp_window_scaling", value: "{{ system_optimizations.network.tcp_window_scaling }}" }
+    - { key: "net.core.rmem_max", value: "{{ system_optimizations.network.net_core_rmem_max }}" }
+    - { key: "net.core.wmem_max", value: "{{ system_optimizations.network.net_core_wmem_max }}" }
+  tags: optimization
+
+# Service Configuration
+- name: Create Jetson performance service
+  template:
+    src: jetson-performance.service.j2
+    dest: /etc/systemd/system/jetson-performance.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify: reload systemd
+  when: services.jetson_performance.enabled
+  tags: services
+
+- name: Enable and start Jetson performance service
+  systemd:
+    name: jetson-performance
+    enabled: yes
+    state: started
+    daemon_reload: yes
+  when: services.jetson_performance.enabled
+  tags: services
+
+- name: Enable jtop service
+  systemd:
+    name: jtop
+    enabled: yes
+    state: started
+  when: jtop.service_enabled
+  failed_when: false
+  tags: services
+
+# Thermal Management
+- name: Configure thermal monitoring
+  template:
+    src: thermal-monitor.sh.j2
+    dest: /usr/local/bin/thermal-monitor.sh
+    owner: root
+    group: root
+    mode: '0755'
+  when: thermal_management.enabled
+  tags: thermal
+
+- name: Set up thermal monitoring cron job
+  cron:
+    name: "Jetson thermal monitoring"
+    job: "/usr/local/bin/thermal-monitor.sh"
+    minute: "*/5"
+    user: root
+  when: thermal_management.enabled
+  tags: thermal
+
+# Monitoring Setup
+- name: Create monitoring scripts
+  template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - { src: "gpu-monitor.sh.j2", dest: "/usr/local/bin/gpu-monitor.sh" }
+    - { src: "system-monitor.sh.j2", dest: "/usr/local/bin/system-monitor.sh" }
+  when: monitoring.gpu_stats.enabled or monitoring.system_stats.enabled
+  tags: monitoring
+
+# Verification
+- name: Check Jetson platform information
+  shell: |
+    cat /proc/device-tree/model 2>/dev/null || echo "Unknown platform"
+  register: jetson_model
+  changed_when: false
+  tags: verification
+
+- name: Check current power mode
+  shell: |
+    nvpmodel -q 2>/dev/null || echo "nvpmodel not available"
+  register: current_power_mode
+  changed_when: false
+  tags: verification
+
+- name: Check GPU status
+  shell: |
+    nvidia-smi --query-gpu=name,driver_version,temperature.gpu,power.draw --format=csv,noheader,nounits 2>/dev/null || echo "GPU info not available"
+  register: gpu_status
+  changed_when: false
+  tags: verification
+
+- name: Check CPU frequencies
+  shell: |
+    cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq 2>/dev/null | head -4 || echo "CPU freq info not available"
+  register: cpu_frequencies
+  changed_when: false
+  tags: verification
+
+- name: Display Jetson optimization results
+  debug:
+    msg:
+      - "Jetson Model: {{ jetson_model.stdout }}"
+      - "Power Mode: {{ current_power_mode.stdout }}"
+      - "GPU Status: {{ gpu_status.stdout }}"
+      - "CPU Frequencies: {{ cpu_frequencies.stdout_lines | join(', ') }}"
+      - "Optimization completed successfully"
+  tags: verification

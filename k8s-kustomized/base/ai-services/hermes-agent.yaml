@@ -1,0 +1,214 @@
+---
+# Hermes Agent — governed personal assistant.
+# Spec:  docs/superpowers/specs/2026-04-18-hermes-agent-design.md
+# Plan:  docs/superpowers/plans/2026-04-18-hermes-agent.md
+#
+# Inference: routed to bare-metal Ollama on jetson1 via the
+# ollama-nemotron Service in this namespace (Nemotron-3-Nano-4B Q4_K_M).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hermes-config
+  namespace: ai-services
+  labels:
+    app: hermes-agent
+data:
+  HERMES_HOME: "/opt/data"
+  # Primary inference: Exo on Mini-2 (M4 16GB, MLX native).
+  # Fallback available via ollama-nemotron (jetson1 bare-metal Nemotron-3-Nano-4B)
+  # — Hermes only uses one at a time; swap HERMES_MODEL_ENDPOINT to revert.
+  HERMES_MODEL_PROVIDER: "custom"
+  HERMES_MODEL_ENDPOINT: "http://exo-mini2.ai-services.svc.cluster.local:52415/v1"
+  HERMES_MODEL: "mlx-community/NVIDIA-Nemotron-Nano-9B-v2-4bits"
+  # Big context + 9B model on single M4 = long prompt-processing. Bump timeout
+  # well past the default so Hermes doesn't retry-storm on cold prompts.
+  HERMES_API_TIMEOUT: "600"
+  HERMES_MEMORY_BACKEND: "fts5"
+  # doc-ingester bridge — wired as HTTP custom tool in hermes-tools.yaml
+  DOC_INGESTER_URL: "http://doc-ingester.ai-services.svc.cluster.local:3002"
+  HERMES_TOOLS_CONFIG: "/opt/data/tools/tools.yaml"
+  # --- WhatsApp gateway (Baileys, QR-paired, no bot account needed) ---
+  HERMES_GATEWAY_ENABLED: "whatsapp"
+  WHATSAPP_MODE: "self-chat"          # text yourself, agent replies with ⚕ prefix
+  WHATSAPP_DEBUG: "false"
+  # WHATSAPP_ALLOWED_USERS: ""         # populate via secret if locking to a number
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hermes-data
+  namespace: ai-services
+  labels:
+    app: hermes-agent
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: local-path
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hermes-agent
+  namespace: ai-services
+  labels:
+    app: hermes-agent
+    app.kubernetes.io/component: agent
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate   # ReadWriteOnce PVC — only one pod can mount at a time
+  selector:
+    matchLabels:
+      app: hermes-agent
+  template:
+    metadata:
+      labels:
+        app: hermes-agent
+    spec:
+      securityContext:
+        runAsUser: 10000
+        runAsGroup: 10000
+        fsGroup: 10000
+      containers:
+        - name: hermes
+          image: docker.io/nousresearch/hermes-agent:latest
+          imagePullPolicy: IfNotPresent
+          # Daemon mode — `hermes gateway` runs the messaging gateway in
+          # foreground (WhatsApp Baileys bridge + agent loop). For
+          # interactive setup again, override to: command: ["sleep", "infinity"]
+          # and re-add stdin/tty.
+          args: ["gateway"]
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: hermes-config
+            - secretRef:
+                name: hermes-secrets
+                optional: true   # no secret needed for WhatsApp QR pairing;
+                                 # add later if enabling cloud-LLM fallback or
+                                 # WHATSAPP_ALLOWED_USERS allowlist
+          volumeMounts:
+            - name: data
+              mountPath: /opt/data
+            - name: tools-config
+              mountPath: /opt/data/tools
+              readOnly: true
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "2Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"   # paperclip-style killswitch ceiling
+          # No probes — Hermes gateway doesn't expose a TCP health endpoint.
+          # K8s restarts the pod if the entrypoint exits non-zero (sufficient
+          # for now). If Hermes adds a /healthz later, wire an httpGet probe.
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: hermes-data
+        - name: tools-config
+          configMap:
+            name: hermes-tools
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hermes-agent
+  namespace: ai-services
+  labels:
+    app: hermes-agent
+spec:
+  type: ClusterIP
+  selector:
+    app: hermes-agent
+  ports:
+    - name: http
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+---
+# Egress allowlist — paperclip-proof.
+# Hermes can reach: in-cluster DNS, ai-services (Ollama Service, doc-ingester),
+# the bare-metal Ollama on jetson1 directly, and public HTTPS for messaging
+# gateways (Telegram/Signal/Discord). Cannot reach RFC1918 internal infra
+# beyond ai-services, and cannot egress on non-443 ports externally.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: hermes-agent-egress
+  namespace: ai-services
+  labels:
+    app: hermes-agent
+spec:
+  podSelector:
+    matchLabels:
+      app: hermes-agent
+  policyTypes:
+    - Egress
+  egress:
+    # DNS (cluster)
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # In-namespace: Ollama Service (11434) + doc-ingester (3002)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ai-services
+      ports:
+        - protocol: TCP
+          port: 11434
+        - protocol: TCP
+          port: 3002
+    # Cross-namespace: homelab-orchestrator viewer (research digest read API).
+    # The viewer pod listens on 8080; the Service maps :80 → :8080. Egress
+    # is enforced against the destination pod port, so allow 8080 here.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: homelab-orchestrator
+      ports:
+        - protocol: TCP
+          port: 8080
+    # Out-of-cluster inference endpoints on the LAN (Services route here,
+    # but an explicit egress rule covers direct IP access too):
+    #   jetson1:11434 — bare-metal Ollama (Nemotron-3-Nano-4B fallback)
+    #   mini-2:52415  — Exo (primary, MLX, Nemotron-Nano-9B-v2)
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.73/32
+      ports:
+        - protocol: TCP
+          port: 11434
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.58/32
+      ports:
+        - protocol: TCP
+          port: 52415
+    # Public HTTPS (Telegram, Signal, Discord, HuggingFace) — all RFC1918
+    # ranges blocked, so internal infra remains unreachable
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443

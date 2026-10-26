@@ -1,0 +1,56 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: gitea-production
+  annotations:
+    config.kubernetes.io/local-config: "true"
+    description: "Gitea production overlay for EliteMini deployment"
+
+# Base configuration to extend
+resources:
+  - ../../../base/gitea
+
+# Production-specific labels
+labels:
+  - pairs:
+      environment: production
+      deployment: homelab-prod
+
+# Production-specific annotations
+commonAnnotations:
+  deployment.kubernetes.io/environment: "production"
+
+# Production patches for EliteMini deployment
+patches:
+  # Deploy on EliteMini control plane
+  - target:
+      kind: Deployment
+      name: gitea
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/nodeSelector
+        value:
+          node-role.kubernetes.io/control-plane: "true"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources
+        value:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+  # Fix IngressRoute to use wildcard cert from ingress-system and correct host
+  - target:
+      kind: IngressRoute
+      name: gitea-ingress
+    patch: |-
+      - op: replace
+        path: /spec/routes/0/match
+        value: Host(`git.example.com`)
+      - op: replace
+        path: /spec/tls
+        value:
+          secretName: example-tls

@@ -1,0 +1,126 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Chris Knuteson
+#
+# Idempotently grants the active Langfuse login
+# admin@example.com access to the existing kagent-homelab org
+# and kagent project. This fixes the state where the org/project exists
+# but only the older admin@example.com account owns it.
+---
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: langfuse-access-bootstrap
+  namespace: database
+  annotations:
+    argocd.argoproj.io/sync-wave: '7'
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  ttlSecondsAfterFinished: 86400
+  backoffLimit: 4
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: bootstrap
+          image: pgvector/pgvector:pg16
+          env:
+            - name: PGHOST
+              value: postgresql.database.svc.cluster.local
+            - name: PGPORT
+              value: '5432'
+            - name: PGUSER
+              value: postgres
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-secrets
+                  key: postgres-password
+            - name: LANGFUSE_USER_EMAIL
+              value: admin@example.com
+            - name: LANGFUSE_ORG_ID
+              value: cmoqhayxw0001zo07cshrcara
+            - name: LANGFUSE_PROJECT_ID
+              value: cmoqhb7rl0006zo07z3xog3tk
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              for i in {1..60}; do
+                if psql -d langfuse -tAc "SELECT to_regclass('public.organization_memberships') IS NOT NULL" | grep -q t; then
+                  break
+                fi
+                sleep 5
+              done
+
+              psql -v ON_ERROR_STOP=1 -d langfuse <<SQL
+              WITH inputs AS (
+                SELECT
+                  '${LANGFUSE_USER_EMAIL}'::text AS user_email,
+                  '${LANGFUSE_ORG_ID}'::text AS org_id,
+                  '${LANGFUSE_PROJECT_ID}'::text AS project_id
+              ),
+              target_user AS (
+                SELECT u.id AS user_id, i.user_email, i.org_id, i.project_id
+                FROM inputs i
+                JOIN users u ON u.email = i.user_email
+              ),
+              target_project AS (
+                SELECT tu.user_id, tu.user_email, tu.org_id, tu.project_id
+                FROM target_user tu
+                JOIN organizations o ON o.id = tu.org_id
+                JOIN projects p ON p.id = tu.project_id AND p.org_id = o.id
+              ),
+              org_upsert AS (
+                INSERT INTO organization_memberships (id, org_id, user_id, role)
+                SELECT
+                  'orgmem-' || substr(md5(tp.org_id || ':' || tp.user_id), 1, 24),
+                  tp.org_id,
+                  tp.user_id,
+                  'OWNER'::"Role"
+                FROM target_project tp
+                ON CONFLICT (org_id, user_id)
+                DO UPDATE SET role = 'OWNER', updated_at = CURRENT_TIMESTAMP
+                RETURNING id, org_id, user_id
+              ),
+              org_membership AS (
+                SELECT id, org_id, user_id FROM org_upsert
+                UNION ALL
+                SELECT om.id, om.org_id, om.user_id
+                FROM organization_memberships om
+                JOIN target_project tp ON tp.org_id = om.org_id AND tp.user_id = om.user_id
+                WHERE NOT EXISTS (SELECT 1 FROM org_upsert)
+              )
+              INSERT INTO project_memberships (project_id, user_id, org_membership_id, role)
+              SELECT tp.project_id, tp.user_id, om.id, 'OWNER'::"Role"
+              FROM target_project tp
+              JOIN org_membership om ON om.org_id = tp.org_id AND om.user_id = tp.user_id
+              ON CONFLICT (project_id, user_id)
+              DO UPDATE SET
+                org_membership_id = EXCLUDED.org_membership_id,
+                role = 'OWNER',
+                updated_at = CURRENT_TIMESTAMP;
+              SQL
+
+              granted_count=$(
+                psql -d langfuse -tAc "
+                  SELECT count(*)
+                  FROM users u
+                  JOIN organization_memberships om ON om.user_id = u.id
+                  JOIN project_memberships pm
+                    ON pm.user_id = u.id
+                   AND pm.org_membership_id = om.id
+                  WHERE u.email = '${LANGFUSE_USER_EMAIL}'
+                    AND om.org_id = '${LANGFUSE_ORG_ID}'
+                    AND om.role = 'OWNER'
+                    AND pm.project_id = '${LANGFUSE_PROJECT_ID}'
+                    AND pm.role = 'OWNER';
+                "
+              )
+              if [ "${granted_count}" != "1" ]; then
+                echo "failed to grant ${LANGFUSE_USER_EMAIL} OWNER access to ${LANGFUSE_ORG_ID}/${LANGFUSE_PROJECT_ID}" >&2
+                exit 1
+              fi
+
+              echo "granted ${LANGFUSE_USER_EMAIL} OWNER access to ${LANGFUSE_ORG_ID}/${LANGFUSE_PROJECT_ID}"

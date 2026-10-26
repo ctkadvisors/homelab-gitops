@@ -1,0 +1,302 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: opensearch-agent-memory-init-attribution
+  namespace: search
+  labels:
+    app: opensearch-agent-memory-init-attribution
+    app.kubernetes.io/name: opensearch-agent-memory-init-attribution
+    app.kubernetes.io/component: bootstrap
+spec:
+  backoffLimit: 8
+  template:
+    metadata:
+      labels:
+        app: opensearch-agent-memory-init-attribution
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: init
+          image: curlimages/curl:8.10.1
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OPENSEARCH_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: opensearch-credentials
+                  key: admin-username
+            - name: OPENSEARCH_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: opensearch-credentials
+                  key: admin-password
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+
+              OS="https://opensearch.search.svc.cluster.local:9200"
+              AUTH="${OPENSEARCH_ADMIN_USER}:${OPENSEARCH_ADMIN_PASSWORD}"
+
+              curl_os() {
+                curl -skf -u "$AUTH" -H "Content-Type: application/json" "$@"
+              }
+
+              echo "waiting for OpenSearch..."
+              until curl -sk -u "$AUTH" "$OS/_cluster/health?wait_for_status=yellow&timeout=5s" >/dev/null; do
+                sleep 5
+              done
+
+              echo "setting ML Commons cluster defaults..."
+              curl_os -X PUT "$OS/_cluster/settings" -d '{
+                "persistent": {
+                  "plugins.ml_commons.only_run_on_ml_node": "false",
+                  "plugins.ml_commons.native_memory_threshold": "90"
+                }
+              }' >/dev/null || true
+
+              create_index() {
+                name="$1"
+                body="$2"
+                code="$(curl -sk -u "$AUTH" -o /dev/null -w "%{http_code}" "$OS/$name")"
+                if [ "$code" = "404" ]; then
+                  echo "creating index $name"
+                  printf "%s" "$body" | curl_os -X PUT "$OS/$name" -d @- >/dev/null
+                else
+                  echo "index $name already exists"
+                fi
+              }
+
+              ensure_attribution_mapping() {
+                name="$1"
+                echo "ensuring attribution mapping on $name"
+                printf "%s" "$ATTRIBUTION_MAPPING" | curl_os -X PUT "$OS/$name/_mapping" -d @- >/dev/null
+              }
+
+              create_memory_index() {
+                body="$1"
+                code="$(curl -sk -u "$AUTH" -o /dev/null -w "%{http_code}" "$OS/agent-memory")"
+                if [ "$code" = "404" ]; then
+                  echo "creating index agent-memory"
+                  printf "%s" "$body" | curl_os -X PUT "$OS/agent-memory" -d @- >/dev/null
+                  return
+                fi
+
+                engine="$(curl -sk -u "$AUTH" "$OS/agent-memory/_mapping" | sed -n 's/.*"content_embedding".*"engine"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+                if [ "$engine" = "lucene" ]; then
+                  echo "index agent-memory already uses lucene k-NN"
+                  return
+                fi
+
+                count="$(curl -sk -u "$AUTH" "$OS/agent-memory/_count" | sed -n 's/.*"count"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -1)"
+                backup="agent-memory-pre-lucene-$(date -u +%Y%m%d%H%M%S)"
+                echo "migrating index agent-memory from ${engine:-default/faiss} to lucene k-NN; backup index is $backup (${count:-unknown} docs)"
+
+                printf "%s" "$body" | curl_os -X PUT "$OS/$backup" -d @- >/dev/null
+                if [ "${count:-0}" != "0" ]; then
+                  curl_os -X POST "$OS/_reindex?wait_for_completion=true&refresh=true" -d "{
+                    \"source\": { \"index\": \"agent-memory\" },
+                    \"dest\": { \"index\": \"$backup\" }
+                  }" >/dev/null
+                fi
+
+                curl_os -X DELETE "$OS/agent-memory" >/dev/null
+                printf "%s" "$body" | curl_os -X PUT "$OS/agent-memory" -d @- >/dev/null
+                if [ "${count:-0}" != "0" ]; then
+                  curl_os -X POST "$OS/_reindex?wait_for_completion=true&refresh=true" -d "{
+                    \"source\": { \"index\": \"$backup\" },
+                    \"dest\": { \"index\": \"agent-memory\" }
+                  }" >/dev/null
+                fi
+              }
+
+              MEMORY_MAPPING='{
+                "settings": {
+                  "index.knn": true,
+                  "number_of_shards": 1,
+                  "number_of_replicas": 0
+                },
+                "mappings": {
+                  "properties": {
+                    "agent_id": { "type": "keyword" },
+                    "content": { "type": "text" },
+                    "summary": { "type": "text" },
+                    "recorded_by": { "type": "keyword" },
+                    "content_embedding": {
+                      "type": "knn_vector",
+                      "dimension": 768,
+                      "method": {
+                        "name": "hnsw",
+                        "space_type": "cosinesimil",
+                        "engine": "lucene",
+                        "parameters": {
+                          "ef_construction": 100,
+                          "m": 16
+                        }
+                      }
+                    },
+                    "status": { "type": "keyword" },
+                    "source_kind": { "type": "keyword" },
+                    "source_ref": { "type": "keyword" },
+                    "source_actor": { "type": "keyword" },
+                    "trust_level": { "type": "keyword" },
+                    "importance": { "type": "integer" },
+                    "tags": { "type": "keyword" },
+                    "entities": {
+                      "properties": {
+                        "name": { "type": "text", "fields": { "keyword": { "type": "keyword" } } },
+                        "type": { "type": "keyword" }
+                      }
+                    },
+                    "supersedes": { "type": "keyword" },
+                    "superseded_by": { "type": "keyword" },
+                    "created_at": { "type": "date" },
+                    "updated_at": { "type": "date" },
+                    "superseded_at": { "type": "date" }
+                  }
+                }
+              }'
+
+              ATTRIBUTION_MAPPING='{
+                "properties": {
+                  "recorded_by": { "type": "keyword" },
+                  "source_kind": { "type": "keyword" },
+                  "source_ref": { "type": "keyword" },
+                  "source_actor": { "type": "keyword" }
+                }
+              }'
+
+              MESSAGE_MAPPING='{
+                "settings": { "number_of_shards": 1, "number_of_replicas": 0 },
+                "mappings": {
+                  "properties": {
+                    "agent_id": { "type": "keyword" },
+                    "session_id": { "type": "keyword" },
+                    "role": { "type": "keyword" },
+                    "content": { "type": "text" },
+                    "recorded_by": { "type": "keyword" },
+                    "source_kind": { "type": "keyword" },
+                    "source_ref": { "type": "keyword" },
+                    "source_actor": { "type": "keyword" },
+                    "tags": { "type": "keyword" },
+                    "created_at": { "type": "date" }
+                  }
+                }
+              }'
+
+              TASK_MAPPING='{
+                "settings": { "number_of_shards": 1, "number_of_replicas": 0 },
+                "mappings": {
+                  "properties": {
+                    "agent_id": { "type": "keyword" },
+                    "task_id": { "type": "keyword" },
+                    "title": { "type": "text", "fields": { "keyword": { "type": "keyword" } } },
+                    "status": { "type": "keyword" },
+                    "priority": { "type": "keyword" },
+                    "summary": { "type": "text" },
+                    "recorded_by": { "type": "keyword" },
+                    "source_kind": { "type": "keyword" },
+                    "source_ref": { "type": "keyword" },
+                    "source_actor": { "type": "keyword" },
+                    "created_at": { "type": "date" },
+                    "updated_at": { "type": "date" }
+                  }
+                }
+              }'
+
+              ENTITY_MAPPING='{
+                "settings": { "number_of_shards": 1, "number_of_replicas": 0 },
+                "mappings": {
+                  "properties": {
+                    "agent_id": { "type": "keyword" },
+                    "name": { "type": "text", "fields": { "keyword": { "type": "keyword" } } },
+                    "type": { "type": "keyword" },
+                    "summary": { "type": "text" },
+                    "aliases": { "type": "keyword" },
+                    "recorded_by": { "type": "keyword" },
+                    "source_kind": { "type": "keyword" },
+                    "source_ref": { "type": "keyword" },
+                    "source_actor": { "type": "keyword" },
+                    "tags": { "type": "keyword" },
+                    "entity_id": { "type": "keyword" },
+                    "event": { "type": "keyword" },
+                    "created_at": { "type": "date" },
+                    "updated_at": { "type": "date" }
+                  }
+                }
+              }'
+
+              create_memory_index "$MEMORY_MAPPING"
+              create_index "agent-messages" "$MESSAGE_MAPPING"
+              create_index "agent-sessions" "$MESSAGE_MAPPING"
+              create_index "agent-tasks" "$TASK_MAPPING"
+              create_index "agent-status" "$TASK_MAPPING"
+              create_index "agent-entities" "$ENTITY_MAPPING"
+              create_index "agent-entity-history" "$ENTITY_MAPPING"
+
+              ensure_attribution_mapping "agent-memory"
+              ensure_attribution_mapping "agent-messages"
+              ensure_attribution_mapping "agent-sessions"
+              ensure_attribution_mapping "agent-tasks"
+              ensure_attribution_mapping "agent-status"
+              ensure_attribution_mapping "agent-entities"
+              ensure_attribution_mapping "agent-entity-history"
+
+              echo "attempting OpenSearch ML model registration..."
+              register_response="$(curl -sk -u "$AUTH" -H "Content-Type: application/json" \
+                -X POST "$OS/_plugins/_ml/models/_register?deploy=true" \
+                -d '{"name":"huggingface/sentence-transformers/all-distilroberta-v1","version":"1.0.2","model_format":"TORCH_SCRIPT"}' || true)"
+
+              task_id="$(printf "%s" "$register_response" | sed -n 's/.*"task_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+              model_id="$(printf "%s" "$register_response" | sed -n 's/.*"model_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+
+              if [ -n "$task_id" ] && [ -z "$model_id" ]; then
+                for _ in $(seq 1 120); do
+                  task_response="$(curl -sk -u "$AUTH" "$OS/_plugins/_ml/tasks/$task_id" || true)"
+                  state="$(printf "%s" "$task_response" | sed -n 's/.*"state"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+                  model_id="$(printf "%s" "$task_response" | sed -n 's/.*"model_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+                  [ "$state" = "COMPLETED" ] && [ -n "$model_id" ] && break
+                  [ "$state" = "FAILED" ] && break
+                  sleep 5
+                done
+              fi
+
+              if [ -z "$model_id" ]; then
+                echo "model registration did not complete; lexical memory indices are ready"
+                exit 0
+              fi
+
+              echo "configuring embedding pipeline with model $model_id"
+              curl_os -X PUT "$OS/_ingest/pipeline/agent-memory-embedding" -d "{
+                \"description\": \"Generate embeddings for agent memory content\",
+                \"processors\": [
+                  {
+                    \"text_embedding\": {
+                      \"model_id\": \"$model_id\",
+                      \"field_map\": {
+                        \"content\": \"content_embedding\"
+                      },
+                      \"skip_existing\": true
+                    }
+                  }
+                ]
+              }" >/dev/null
+
+              curl_os -X PUT "$OS/agent-memory/_settings" -d '{
+                "index": {
+                  "default_pipeline": "agent-memory-embedding"
+                }
+              }' >/dev/null
+
+              curl_os -X PUT "$OS/agent-status/_doc/embedding-model?refresh=true" -d "{
+                \"agent_id\": \"system\",
+                \"task_id\": \"embedding-model\",
+                \"title\": \"OpenSearch agent memory embedding model\",
+                \"status\": \"deployed\",
+                \"summary\": \"huggingface/sentence-transformers/all-distilroberta-v1\",
+                \"source_ref\": \"$model_id\",
+                \"created_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
+                \"updated_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+              }" >/dev/null
+
+              echo "OpenSearch agent memory schema ready"

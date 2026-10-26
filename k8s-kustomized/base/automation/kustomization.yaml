@@ -1,0 +1,32 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: automation-base
+  annotations:
+    config.kubernetes.io/local-config: "true"
+
+# Resources to include
+resources:
+  - namespace.yaml
+  - n8n.yaml
+  - n8n-kagent-node.yaml
+  - redis.yaml # Redis queue for AI code generation
+
+# Common labels applied to all resources
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: local-ai-homelab
+      app.kubernetes.io/managed-by: kustomize
+      component: automation
+
+# Common annotations
+commonAnnotations:
+  config.kubernetes.io/origin: |
+    path: k8s-kustomized/base/automation/kustomization.yaml
+
+# Images to use
+images:
+  - name: n8nio/n8n
+    newTag: "2.2.4"

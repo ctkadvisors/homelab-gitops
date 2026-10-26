@@ -1,0 +1,461 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Chris Knuteson
+#
+# kagent-workbench — read-only operator console over the kagent
+# control plane. Surfaces AgentTask / Agent / Pod / Job state via a
+# thin API facade (`@kagent/workbench-api`) + Vite/React UI
+# (`@kagent/workbench-ui`). See kagent/docs/WORKBENCH.md for design
+# (read-only first; actions only after the read views are useful).
+#
+# ============================================================
+# Status (2026-04-28): WIRED into k8s-kustomized/overlays/production/
+# kagent/ as part of the v0.0.6-ws-i ship.
+#
+# Auth posture: ingress.authMiddleware is intentionally BLANK.
+# Trust boundary is Tailscale, NOT the application:
+#
+#   - Public DNS (`*.example.com`) resolves to 10.0.0.200 — a
+#     non-routable RFC1918 address. Reachable only from devices on
+#     the user's tailnet (subnet route).
+#   - Same posture as `argocd.example.com` and other admin-only
+#     `*.example.com` services in this homelab.
+#   - The chart's Render Path 1 (vanilla networking.k8s.io/v1
+#     Ingress) is used; basicAuth Middleware is not provisioned.
+#
+# A future SSO / Cloudflare-Tunnel cut-over (per
+# docs/TAILSCALE_SECURITY_STRATEGY.md §Phase 2) can flip this back
+# to Render Path 2 by setting authMiddleware to a real Middleware
+# name.
+# ============================================================
+#
+# Image registry: ghcr.io/ctkadvisors/kagent-workbench-{api,ui}.
+# Public ghcr.io packages from a public GitHub repo — no pull
+# secret needed. Tag push to github.com/ctkadvisors/kagent triggers
+# .github/workflows/ci.yml which publishes both images.
+#
+# Source registry: github.com/ctkadvisors/kagent (public repo,
+# auth-free `git clone`). Pre-public-release this pointed at the
+# homelab Gitea mirror; once public the mirror was just adding
+# pull-sync lag with no upside.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kagent-workbench
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: kagent-workbench
+    app.kubernetes.io/part-of: local-ai-homelab
+    app.kubernetes.io/component: console
+  annotations:
+    # Wave 7: after kagent operator (wave 6). The workbench
+    # depends on the CRDs + RBAC that the operator chart
+    # installs, so it must reconcile after.
+    argocd.argoproj.io/sync-wave: '7'
+spec:
+  project: default
+
+  source:
+    # Public GitHub repo — same auth-free read access as the
+    # ghcr.io image pull path. Argo polls every ~3 min; the round-
+    # trip to github.com is trivial vs. the mirror-pull lag we
+    # used to gate sync on.
+    repoURL: https://github.com/ctkadvisors/kagent.git
+    # v0.2.42-probe-default-off-rc.1 — carries the hono security bump
+    # (see the api image tag below) and the charts' corrected
+    # NetworkPolicy claim. The operator health probes in this tag do not
+    # touch the workbench chart: its rendered output is still
+    # byte-identical to v0.2.27.
+    targetRevision: v0.2.53-template-owner-rc.1
+    # Helm chart lives next to the operator chart under
+    # `packages/operator/charts/`. (The earlier draft of this
+    # manifest pointed at `packages/workbench-api/charts/...`,
+    # which never existed — both kagent charts share one
+    # `charts/` parent in the repo.)
+    path: packages/operator/charts/kagent-workbench
+    helm:
+      releaseName: kagent-workbench
+      values: |
+        # ---------------------------------------------------
+        # Top-level chart values. The chart's values.yaml keeps
+        # replicaCount / serviceAccount / rbac / service /
+        # imagePullSecrets / ingress / logLevel at the top
+        # level — `api.*` and `ui.*` only carry per-container
+        # config (image, port, healthPath, resources, and a
+        # couple of api-only knobs).
+        # ---------------------------------------------------
+        replicaCount: 1
+
+        # ---------------------------------------------------
+        # Workbench API container (Node 22 + tsx).
+        # ---------------------------------------------------
+        api:
+          image:
+            repository: ghcr.io/ctkadvisors/kagent-workbench-api
+            # v0.2.0-disp-rc.1 — Phase 1 / DISP-03 ships the
+            # /api/dispositions projection (per-Agent attention budget +
+            # proposal scope from sibling disposition ConfigMaps,
+            # gateway-usage spentTokensToday delta, exactly-once-per-
+            # day disposition.over_budget audit emission). Bumped in
+            # lockstep with workbench-ui to keep the image tag pair
+            # consistent. Operator + agent-pod stay on rc.1 — their
+            # source did not change in Phase 1 (DISP-01..04 are
+            # additive-only on the operator chart and add the
+            # configmaps:patch + chart-rendered schema-validate Job).
+            #
+            # v0.2.1-mission-control-rc.1 — Mission Control enterprise UI
+            # redesign (workbench-ui only changed; api rebuilt at the same
+            # tag for the lockstep pair). One dark design system + app
+            # shell unifying all six surfaces; Architect rebuilt into a
+            # real chat surface. See
+            # docs/superpowers/specs/2026-06-05-mission-control-ui-design.md
+            #
+            # v0.2.5-architect-try-live-rc.1 — Architect /try now
+            # persists the candidate AgentTemplate, materializes a draft
+            # Agent, and creates a live AgentTask so "View trace" points at
+            # an actual Langfuse task trace instead of the Langfuse base URL.
+            #
+            # v0.2.6-architect-try-live-rc.1 — normalizes Architect
+            # model-class aliases emitted as `agentSpec.model` into
+            # `agentSpec.modelClass`, preventing admission-pending draft
+            # Jobs for logical classes like text-generator-default.
+            #
+            # v0.2.9-architect-hardening-rc.1 — hardens Architect /try:
+            # materializes defaulted parameters, rejects required params
+            # without defaults before creating CRs, uses traceparent-backed
+            # Langfuse links, and fixes SSE slot release for terminal tasks.
+            #
+            # v0.2.10-architect-live-draft-rc.1 — validates AgentTemplate
+            # candidates against CRD ranges/patterns, makes /try clean up
+            # partial draft resources, stamps template labels/ownerRefs, and
+            # tightens Architect mobile navigation/composer behavior.
+            #
+            # v0.2.14-killable-solid-rc.1 — adds gateway dispatch
+            # pause/resume proxying and task termination endpoints.
+            #
+            # v0.2.18-workbench-sessions-rc.2 — adds the Workbench
+            # Sessions channel: chat-style controller sessions backed by
+            # AgentTasks, live timeline refresh, and deep links to each
+            # created turn task. Also carries the deterministic
+            # tool-gateway stop-task test fix needed for image CI.
+            #
+            # v0.2.19-useful-agent-channel-rc.2 — Sessions consumes typed
+            # Agent-backed profiles from /api/session-profiles and exposes
+            # stop controls for active channel turns. rc.2 carries the CI
+            # code-runner stop-test race fix required for image release.
+            #
+            # v0.2.24-workbench-channel-control-rc.1 — exposes Channel,
+            # ChannelBinding, and ChannelSession state through
+            # /api/channels, with QR/pairing material redacted to
+            # availability booleans and a paused-only channel patch path.
+            #
+            # v0.2.25-workbench-channel-qr-rc.1 — adds a no-store
+            # server-rendered QR SVG endpoint so pairing can be scanned
+            # without exposing raw QR strings in list/detail JSON.
+            #
+            # v0.2.27-channel-denied-inbound-rc.1 — projects
+            # Channel.status.lastDeniedInbound without message text so
+            # the Channels view can show the exact denied sender JID.
+            #
+            # v0.2.42-probe-default-off-rc.1 — hono 4.6.14 -> 4.13.0 and
+            # @hono/node-server 1.13.7 -> 1.19.17, clearing 4 HIGH
+            # advisories (Improper Authorization; JWT/JWK algorithm
+            # confusion; CORS credential reflection; serve-static
+            # authorization bypass via encoded slashes). No API change:
+            # all 247 workbench-api tests pass on 4.13.0.
+            tag: 'v0.2.53-template-owner-rc.1'
+            pullPolicy: IfNotPresent
+          port: 8080
+          # K8s probes hit pod port 8080 directly (Ingress is bypassed)
+          # so the path is the API's bare HTTP route — workbench-api
+          # mounts /healthz + /readyz at the root.
+          healthPath: '/healthz'
+          # Set once Langfuse is deployed; chart hides "open trace"
+          # links when blank.
+          # v0.1.7-rig.1 — set so workbench-api populates `traceLink`
+          # on every task detail. The Langfuse self-hosted UI exposes
+          # /trace/<id> directly; the workbench's traceLink() derives
+          # the OTel trace ID via sha256(uid).slice(0,32) so deep-links
+          # resolve.
+          #
+          # fix/workbench-langfuse-wiring — this value MUST be the
+          # BROWSER-reachable Langfuse host, not the in-cluster service
+          # URL. workbench-api uses langfuseBaseUrl ONLY to build the
+          # "View trace" deep-link that the operator renders in the
+          # user's browser (it makes ZERO Langfuse API calls — trace
+          # PUSH is OTLP-from-the-agent-pod, see trace-sinks/OtelTraceSink;
+          # trace QUERY is never done). The previous value
+          # `http://langfuse-web.langfuse-system.svc.cluster.local:3000`
+          # is unresolvable from a browser, so every "View trace" link
+          # 404'd on click. The public Traefik IngressRoute
+          # (overlays/production/langfuse/ingressroute.yaml) fronts the
+          # same langfuse-web Service at langfuse.example.com (Tailscale
+          # subnet-routed), so OTLP-ingested traces are reachable here.
+          langfuseBaseUrl: 'https://langfuse.example.com'
+          # 'false' = workbench-api will NOT 401 requests missing the
+          # X-Forwarded-User header. We don't have Traefik forward-auth
+          # in front yet; the trust boundary is the Tailscale subnet
+          # route to 10.0.0.200 (RFC1918, non-routable from the
+          # public internet). Flip to 'true' the moment forward-auth
+          # is wired in (oauth2-proxy / authentik / similar) so the
+          # workbench can read X-Forwarded-User as the caller identity.
+          # NOTE: workbench-api treats `''` as "auth required" — only
+          # the literal string 'false' disables the gate. See
+          # packages/workbench-api/src/auth.ts:resolveAuthRequired().
+          authRequired: 'false'
+          # v0.1.7-rig.4 — Gateway page wiring. Points the workbench-api
+          # at the kagent LLM gateway's /admin/* surface so the
+          # `#/gateway` page can render live AIMD state + tune
+          # ModelEndpoint inflight bounds without git-edits.
+          # admin.secretName references the gateway's own admin token
+          # Secret (same value the gateway accepts on its /admin/*
+          # endpoints — see llm-gateway-application.yaml).
+          gatewayAdmin:
+            baseUrl: 'http://kagent-llm-gateway.kagent-system.svc.cluster.local:4000'
+            admin:
+              secretName: kagent-llm-gateway-token
+              secretKey: token
+
+          # kagent Studio Architect (chat-to-create). Routes generation
+          # through the gateway's OpenAI-compatible /v1 surface (CF Scout
+          # — the strongest backend wired today; nemotron-nano can't emit
+          # valid AgentTemplate YAML reliably). The draft-generation call
+          # itself is not an AgentTask and is not Langfuse-traced by the
+          # gateway. The /try write path lands AgentTemplates, draft Agents,
+          # and live AgentTasks in kagent-draft; those AgentTasks trace via
+          # the operator-injected OTLP Langfuse sink. Writes are gated by
+          # rbac.actions.create below + the kagent-draft Role granted to
+          # the workbench SA in draft-namespace.yaml.
+          architect:
+            enabled: true
+            gatewayUrl: 'http://kagent-llm-gateway.kagent-system.svc.cluster.local:4000/v1'
+            model: 'workers-ai/@cf/meta/llama-4-scout-17b-16e-instruct'
+            tokenSecret:
+              name: kagent-llm-gateway-token
+              key: token
+            draftNamespace: kagent-draft
+
+        # ---------------------------------------------------
+        # Workbench UI sidecar (nginx-alpine baking the vite
+        # build's dist/). Same Pod as the api container; the
+        # api container proxies non-/api requests to this
+        # sidecar over loopback.
+        # ---------------------------------------------------
+        ui:
+          image:
+            repository: ghcr.io/ctkadvisors/kagent-workbench-ui
+            # v0.2.0-disp-rc.1 — Phase 1 / DISP-04 ships the Command
+            # Center disposition overlay: per-Agent attention budget +
+            # proposal scope rendered alongside existing flow-economy
+            # widgets, source-binding contract per
+            # docs/COMMAND-CENTER-CONTRACT.md (every visible value
+            # carries data-source-field/data-source-fields), reload-
+            # stable derivation from /api/dispositions, dramatized vs
+            # subdued pressure markers gated on
+            # VITE_PRESSURE_DRAMATIZATION. UI bumped in lockstep with
+            # workbench-api so the two images carry the same tag.
+            #
+            # v0.2.1-mission-control-rc.1 — Mission Control enterprise UI
+            # redesign: dark token design system (src/styles/global.css),
+            # persistent AppShell (lifecycle-grouped left rail + global
+            # KPI top bar), Architect rebuilt from raw HTML into a chat
+            # surface, all data surfaces re-skinned onto shared tokens.
+            # Command Center untouched (renders full-bleed outside shell).
+            #
+            # v0.2.5-architect-try-live-rc.1 — pairs with the API tag
+            # above; Architect shows task + Langfuse trace links after
+            # launching the draft AgentTask.
+            #
+            # v0.2.6-architect-try-live-rc.1 — lockstep rebuild with
+            # the API model-class normalization.
+            #
+            # v0.2.9-architect-hardening-rc.1 — lockstep rebuild with
+            # Architect validation/no-clipping UI and quieter terminal
+            # task polling.
+            #
+            # v0.2.10-architect-live-draft-rc.1 — lockstep rebuild with
+            # API live-draft cleanup, CRD-aligned candidate validation,
+            # mobile bottom navigation, and a taller Architect composer.
+            #
+            # v0.2.14-killable-solid-rc.1 — lockstep rebuild with
+            # workbench-api for kill switch and task termination UI.
+            #
+            # v0.2.18-workbench-sessions-rc.2 — lockstep rebuild with
+            # the Sessions route and chat-style controller timeline.
+            #
+            # v0.2.19-useful-agent-channel-rc.2 — lockstep rebuild with
+            # the typed profile picker and active-turn stop control. rc.2
+            # carries the CI code-runner stop-test race fix required for
+            # image release.
+            #
+            # v0.2.24-workbench-channel-control-rc.1 — lockstep rebuild
+            # with the Channels route, left/bottom navigation entry, and
+            # channel pause/resume controls.
+            #
+            # v0.2.25-workbench-channel-qr-rc.1 — lockstep rebuild with
+            # the QR image in the Channels pairing panel.
+            #
+            # v0.2.27-channel-denied-inbound-rc.1 — lockstep rebuild with
+            # last-denied inbound rows in the Channels policy panel.
+            #
+            # v0.2.42-probe-default-off-rc.1 — lockstep rebuild with the
+            # workbench-api hono bump. No UI change in this tag.
+            tag: 'v0.2.53-template-owner-rc.1'
+            pullPolicy: IfNotPresent
+          port: 8081
+          healthPath: '/'
+
+        # ---------------------------------------------------
+        # ServiceAccount + RBAC. Cluster-scoped reads plus explicit
+        # action verbs for task creation and manual termination.
+        # ---------------------------------------------------
+        serviceAccount:
+          create: true
+          name: 'kagent-workbench'
+        rbac:
+          create: true
+          # WS-J — flip on the agenttasks:[create] ClusterRole + binding
+          # so the workbench-api can POST /api/tasks. The chart also
+          # gates the in-pod write surface behind WORKBENCH_ACTIONS_ENABLED
+          # env (set to 'true' when this is true), so the New Task
+          # button + kagent CLI both light up.
+          actions:
+            create: true
+            # Enables DELETE /api/tasks/:namespace/:name across runtime
+            # namespaces so pending or dispatched work can be stopped from
+            # the Workbench before it burns more provider traffic.
+            terminateAllNamespaces: true
+
+        # ---------------------------------------------------
+        # No image pull secret — ghcr.io/ctkadvisors/kagent-* are
+        # public packages from a public GitHub repo and require no
+        # auth.
+        # ---------------------------------------------------
+        imagePullSecrets: []
+
+        # ---------------------------------------------------
+        # Ingress — see new_localai/docs/kagent-workbench-rbac.md
+        # for the auth plan. Two render paths in the chart:
+        #
+        #   - authMiddleware == ''  → vanilla networking.k8s.io
+        #     Ingress.
+        #   - authMiddleware != ''  → Traefik IngressRoute with
+        #     the named Middleware referenced for auth.
+        #
+        # We're on the IngressRoute path here because *.example.com
+        # has no shared SSO yet — basicAuth Middleware in
+        # kagent-system is the gate. The Middleware itself is
+        # provisioned separately (Sealed-Secret-backed).
+        # ---------------------------------------------------
+        ingress:
+          enabled: true
+          # Hostname check (2026-04-26): no other manifest in
+          # new_localai/ uses kagent.example.com (only the CRD
+          # api group `kagent.example.com/v1alpha1` shares the
+          # string — that's a Kubernetes group, not a DNS name).
+          # Free to take.
+          host: kagent.example.com
+          className: 'traefik'
+          tls:
+            secretName: example-tls
+          # Empty → chart renders a vanilla networking.k8s.io/v1
+          # Ingress (Render Path 1). Tailscale subnet routing is the
+          # trust boundary; see header comment.
+          authMiddleware: ''
+          # Required for Traefik in this homelab — without
+          # `router.entrypoints: web,websecure` the IngressClass
+          # provider only attaches the route to the `web`
+          # entrypoint, so HTTPS hits Traefik's default backend
+          # and returns 404. `router.tls: "true"` tells Traefik to
+          # terminate TLS on the websecure entrypoint using the
+          # Secret named in `tls.secretName` above. Same shape as
+          # k8s-kustomized/base/argocd/argocd-ingress.yaml.
+          annotations:
+            traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+            traefik.ingress.kubernetes.io/router.tls: 'true'
+
+        # Override the chart's default Traefik allow-rule. The chart
+        # defaults to namespace `ingress-controller` / pod label
+        # `app.kubernetes.io/name=traefik`, but in this homelab
+        # Traefik lives in `ingress-system`. Without this override the
+        # K3s kube-router NetworkPolicy enforcer drops Traefik→
+        # workbench packets and every external request returns 502
+        # Bad Gateway, even though pods are 2/2 Ready.
+        networkPolicy:
+          enabled: true
+          ingressFrom:
+            - namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: ingress-system
+              podSelector:
+                matchLabels:
+                  app.kubernetes.io/name: traefik
+            # Allow RC-pilot evidence collector Job (and any other
+            # rc-pilot-rig labeled pods in kagent-system) to reach
+            # the workbench API for `collect-workbench-evidence.mjs`.
+            - podSelector:
+                matchLabels:
+                  app.kubernetes.io/component: rc-pilot-rig
+            # improve-daily's collect stage reads failed AgentTasks
+            # from /api/tasks as investigation evidence.
+            - podSelector:
+                matchLabels:
+                  app: improve-daily
+            # digest (report.py) creates and polls its AgentTask here.
+            - podSelector:
+                matchLabels:
+                  app: digest
+            # The fleet scheduler reads /api/sessions for the "is Chris chatting" signal.
+            - podSelector:
+                matchLabels:
+                  app: fleet-reconcile
+            # Allow RC-spectrum evidence collector Job. The collector
+            # uses the same Workbench API evidence script, but its pods
+            # carry the rc-spectrum-rig component label.
+            - podSelector:
+                matchLabels:
+                  app.kubernetes.io/component: rc-spectrum-rig
+            # Allow the local tool runtime to inspect Workbench JSON
+            # endpoints from operator-investigator sessions. The
+            # code_interpreter runner lives in the tool-gateway pod;
+            # browser navigation originates in the Steel browser pod.
+            - podSelector:
+                matchLabels:
+                  app.kubernetes.io/component: tool-gateway
+            - podSelector:
+                matchLabels:
+                  app.kubernetes.io/component: steel-browser
+            # n8n (automation ns) — the KagentAgent custom node drives
+            # the fleet via POST /api/tasks + polling; agents are
+            # discovered live via GET /api/agents (no hardcoding).
+            - namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: automation
+              podSelector:
+                matchLabels:
+                  app: n8n
+
+        logLevel: 'info'
+
+  destination:
+    server: https://kubernetes.default.svc
+    # Same namespace as the operator — same trust boundary, same
+    # RBAC scope (ClusterRoleBinding for cluster-wide CRD reads
+    # is justified in kagent-workbench-rbac.md §2.2).
+    namespace: kagent-system
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

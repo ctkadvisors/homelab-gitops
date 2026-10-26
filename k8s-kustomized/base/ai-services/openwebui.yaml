@@ -1,0 +1,143 @@
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openwebui
+  namespace: ai-services
+  labels:
+    app: openwebui
+    app.kubernetes.io/name: openwebui
+    app.kubernetes.io/component: web-interface
+    app.kubernetes.io/part-of: local-ai-homelab
+  annotations:
+    # ArgoCD Image Updater configuration
+    argocd-image-updater.argoproj.io/image-list: openwebui=ghcr.io/open-webui/open-webui
+    argocd-image-updater.argoproj.io/openwebui.update-strategy: latest
+    argocd-image-updater.argoproj.io/openwebui.allow-tags: regexp:^main$|^v[0-9]+\.[0-9]+\.[0-9]+$
+    argocd-image-updater.argoproj.io/write-back-method: git
+    argocd-image-updater.argoproj.io/git-branch: main
+    argocd-image-updater.argoproj.io/openwebui.force-update: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openwebui
+  template:
+    metadata:
+      labels:
+        app: openwebui
+        app.kubernetes.io/name: openwebui
+        app.kubernetes.io/component: web-interface
+    spec:
+      nodeSelector:
+        node-type: control-plane
+      containers:
+        - name: openwebui
+          image: ghcr.io/open-webui/open-webui:v0.8.10
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: DATA_DIR
+              value: "/app/backend/data"
+            # LocalAI OpenAI-compatible API
+            - name: OPENAI_API_BASE_URL
+              value: "http://localai.ai-services.svc.cluster.local:8080/v1"
+            - name: OPENAI_API_KEY
+              value: "sk-localai" # LocalAI doesn't require a real key
+            # Ollama API enabled alongside OpenAI/LocalAI to surface the
+            # bare-metal jetson1 Ollama models (nemotron + tolkien) in chat.
+            - name: ENABLE_OLLAMA_API
+              value: "true"
+            - name: OLLAMA_BASE_URL
+              value: "http://ollama-nemotron.ai-services.svc.cluster.local:11434"
+            - name: ENABLE_OPENAI_API
+              value: "true"
+            - name: ENABLE_SIGNUP
+              value: "true"
+            - name: DEFAULT_MODELS
+              value: "tinyllama"
+            - name: WEBUI_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: openwebui-secrets
+                  key: jwt-secret
+            - name: RAG_EMBEDDING_ENGINE
+              value: "openai"
+            - name: RAG_EMBEDDING_MODEL
+              value: "text-embedding-ada-002"
+            - name: ENABLE_RAG_WEB_SEARCH
+              value: "false"
+            - name: ENABLE_RAG_LOCAL_WEB_FETCH
+              value: "false"
+            # Qdrant Vector Database Configuration
+            - name: VECTOR_DB
+              value: "qdrant"
+            - name: QDRANT_URI
+              value: "http://qdrant.vector-db.svc.cluster.local:6333"
+            - name: QDRANT_COLLECTION
+              value: "homelab_docs"
+            - name: CHUNK_SIZE
+              value: "1000"
+            - name: CHUNK_OVERLAP
+              value: "200"
+            - name: UVICORN_TIMEOUT_KEEP_ALIVE
+              value: "5"
+            - name: UVICORN_TIMEOUT_GRACEFUL_SHUTDOWN
+              value: "5"
+            - name: LOG_LEVEL
+              value: "INFO"
+            # OpenAPI Server Configuration - MCPO Control Panel
+            - name: OPENAPI_SERVERS
+              value: '[{"name": "mcpo-control-panel", "url": "https://mcpo.example.com", "description": "MCPO Control Panel - Model Context Protocol server management"}]'
+            - name: ENABLE_OPENAPI_SERVERS
+              value: "true"
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          volumeMounts:
+            - name: data
+              mountPath: /app/backend/data
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+      volumes:
+        - name: data
+          hostPath:
+            path: /opt/openwebui-data
+            type: DirectoryOrCreate
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: openwebui
+  namespace: ai-services
+  labels:
+    app: openwebui
+    app.kubernetes.io/name: openwebui
+    app.kubernetes.io/component: web-interface
+spec:
+  selector:
+    app: openwebui
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http
+  type: ClusterIP

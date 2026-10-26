@@ -1,0 +1,53 @@
+---
+# homelab-orchestrator — daily research-digest CronJob.
+#
+# Source: ctkadvisors/homelab-orchestrator repo (external to new_localai).
+# The orchestrator ships its own k8s/ bundle + topics.yaml; ArgoCD syncs
+# directly from its main branch.
+#
+# Deployer-supplied secrets (NOT in the synced manifests; create once per
+# cluster, see homelab-orchestrator/docs/DEPLOY.md):
+#   Secret/ghcr-auth  — docker-registry type, for ghcr.io image pulls
+#   Secret/llm-config — envFrom fields (OPENAI_BASE_URL, OPENAI_MODEL, ...)
+#
+# ArgoCD repo credential: separate imperative Secret in argocd ns binds a
+# GitHub PAT (read:repo) to this repo URL. Declared in argocd-cm via the
+# sibling kustomization.yaml's repositories patch.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: homelab-orchestrator
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: homelab-orchestrator
+    app.kubernetes.io/part-of: argocd
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/ctkadvisors/homelab-orchestrator.git
+    targetRevision: main
+    path: k8s
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: homelab-orchestrator
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+
+  revisionHistoryLimit: 10

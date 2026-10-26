@@ -1,0 +1,153 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Chris Knuteson
+#
+# kagent-llm-gateway — OpenAI-compatible HTTP gateway that fronts
+# multiple LLM backends (Jetson Ollama today; Cloudflare AI Gateway,
+# OpenRouter, Bedrock when wired). Admission-control queueing happens
+# operator-side via the ModelEndpoint CRD; the gateway enforces an
+# AIMD-tuned per-(model, backend) cap as last-resort safety so a
+# misconfigured operator can't melt the Jetson GPU.
+#
+# Deploys with bundled in-cluster Postgres (Bitnami sub-chart) for
+# usage rows + API keys. Cloud deployers can swap to RDS/Cloud SQL
+# via gateway.database.bundled=false + dsnSecretRef pointing at a
+# managed-Postgres DSN Secret (see llm-gateway-bundle-design.md §3.7).
+#
+# Ships disabled in stage 1 — the operator chart's llmGateway.enabled
+# stays false until this Application is Healthy. Stage 2 PR flips
+# the operator flag to start routing agent-pod LLM calls through
+# the gateway; until then this is a parked deployment that proves the
+# substrate boots clean.
+#
+# Sync wave 5 — same as ai-services (gateway-shape consumers want it
+# up before they sync). Replaces the dead-letter `ai-services/ai-gateway`
+# (separate cleanup PR).
+---
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kagent-llm-gateway
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: kagent-llm-gateway
+    app.kubernetes.io/part-of: local-ai-homelab
+  annotations:
+    # Sync wave 5 — after secrets (wave 4), before the operator (wave
+    # 6) so when the operator later flips llmGateway.enabled the
+    # gateway service is already there.
+    argocd.argoproj.io/sync-wave: '5'
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/ctkadvisors/kagent.git
+    targetRevision: v0.2.53-template-owner-rc.1
+    path: packages/llm-gateway/charts/llm-gateway
+    helm:
+      releaseName: kagent-llm-gateway
+      values: |
+        # Stage 1: gateway up but operator still talks direct to
+        # Jetson Ollama. Stage 2 PR sets llmGateway.enabled=true on
+        # the operator chart to switch over.
+        enabled: true
+
+        image:
+          repository: ghcr.io/ctkadvisors/kagent-llm-gateway
+          # v0.2.14-killable-solid-rc.1 — keeps invalid provider models
+          # non-retryable, preserves Retry-After on backoff, and adds the
+          # live admin provider-dispatch kill switch.
+          # v0.2.44-gateway-body-cap-rc.1 — request body cap 64 KiB ->
+          # 8 MiB with a JSON 413 instead of a socket destroy. The old
+          # cap killed every agent at ~16k tokens of conversation
+          # ("LLM backend returned HTTP 0", brain-auditor 2026-09-01).
+          tag: 'v0.2.53-template-owner-rc.1'
+          pullPolicy: IfNotPresent
+
+        replicaCount: 1
+
+        # Pinned to control-plane (not compute-worker) so the gateway can
+        # reach Spark's llama-swap endpoint (100.64.0.69:9090) for the
+        # qwen-coder-spark ModelEndpoint. Spark sits on a different L2
+        # segment reachable only via elitemini's tailscaled subnet-router
+        # route — compute-worker (elitemini2) has no path to it. Same
+        # reasoning as qwen-coder.yaml's nodeSelector.
+        nodeSelector:
+          node-type: control-plane
+
+        resources:
+          requests: { cpu: 100m, memory: 256Mi }
+          limits:   { cpu: 500m, memory: 512Mi }
+
+        service:
+          type: ClusterIP
+          port: 4000
+
+        providerDispatch:
+          disabled: false
+
+        failureBackoff:
+          threshold: 1
+          seconds: 300
+
+        adminApiToken:
+          secretName: kagent-llm-gateway-token
+          secretKey: token
+
+        # v0.1.7-rig.3 — per-backend API keys. The chart mounts each
+        # configured key from the named Secret as
+        # `BACKEND_API_KEY_<KIND>` env vars; the gateway reads them
+        # at boot via `parseBackendApiKeys` (env.ts) and threads into
+        # routerDeps. Backends not listed in `keys` are sent
+        # unauthenticated — correct for ollama (Jetson) and the local
+        # localai/exo backends; required for cloud providers.
+        backendApiKeysSecret:
+          name: kagent-llm-gateway-backend-keys
+          keys:
+            cloudflare: cf-api-token
+            # Add more entries (openai, anthropic, …) when the
+            # corresponding ModelEndpoint lands. Empty / unset keys
+            # are skipped — no env injection, no Authorization header.
+
+        database:
+          # BYO mode against the existing shared postgres in the
+          # database namespace (pgvector/pgvector:pg16). DSN created
+          # by llm-gateway-db-bootstrap.yaml's Job + committed Secret.
+          # Bundled Bitnami sub-chart was dropped — Bitnami changed
+          # dockerhub pricing Aug 2025 and the homelab already runs a
+          # perfectly good Postgres.
+          bundled: false
+          dsnSecretRef:
+            name: kagent-llm-gateway-pg-dsn
+            key: dsn
+
+        migrations:
+          # The gateway process applies migrations on startup. Keep the Helm
+          # hook off until the image ships a dedicated migrate entrypoint.
+          enabled: false
+          nodeSelector:
+            node-type: compute-worker
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kagent-system
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+      - RespectIgnoreDifferences=true
+      # Helm post-install hook for the migration Job needs this; the
+      # Job has hook annotations but Argo's default hook handling
+      # treats them via the Sync semantics (not Helm's directly).
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

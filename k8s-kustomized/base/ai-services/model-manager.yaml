@@ -1,0 +1,87 @@
+# Model Manager DaemonSet - runs on each Jetson GPU node
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: model-manager
+  namespace: ai-services
+  labels:
+    app: model-manager
+    app.kubernetes.io/name: model-manager
+    app.kubernetes.io/component: model-management
+spec:
+  selector:
+    matchLabels:
+      app: model-manager
+  template:
+    metadata:
+      labels:
+        app: model-manager
+        app.kubernetes.io/name: model-manager
+    spec:
+      imagePullSecrets:
+        - name: gitea-registry-secret
+      nodeSelector:
+        nvidia.com/gpu: "true" # Only deploy on GPU nodes (Jetsons)
+      containers:
+        - name: model-manager
+          image: git.example.com/homelab/model-manager:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3001
+              name: http
+              protocol: TCP
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: MODELS_PATH
+              value: "/models"
+            - name: LOCALAI_URL
+              value: "http://localai.ai-services.svc.cluster.local:8080"
+          volumeMounts:
+            - name: models
+              mountPath: /models
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3001
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3001
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: models
+          hostPath:
+            path: /opt/localai-models
+            type: DirectoryOrCreate
+---
+# Model Manager Service - headless for individual pod access
+apiVersion: v1
+kind: Service
+metadata:
+  name: model-manager
+  namespace: ai-services
+  labels:
+    app: model-manager
+spec:
+  clusterIP: None # Headless service
+  selector:
+    app: model-manager
+  ports:
+    - name: http
+      port: 3001
+      targetPort: 3001
+      protocol: TCP

@@ -1,0 +1,56 @@
+# Prometheus Configuration
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+rule_files:
+  - "alerts.yml"
+
+scrape_configs:
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Node Exporter
+  - job_name: 'node'
+    static_configs:
+      - targets: 
+        - 'node-exporter:9100'
+
+  # Docker containers
+  - job_name: 'docker'
+    static_configs:
+      - targets: ['172.17.0.1:9323']
+
+  # Traefik
+  - job_name: 'traefik'
+    static_configs:
+      - targets: ['traefik:8080']
+
+  # Model Router
+  - job_name: 'model-router'
+    static_configs:
+      - targets: ['model-router:8000']
+    metrics_path: '/metrics'
+
+  # Jetson GPU Metrics
+  - job_name: 'jetson'
+    static_configs:
+      - targets: ['jetson-exporter:8000']
+
+  # PostgreSQL
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+
+  # Redis
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-exporter:9121']

@@ -1,0 +1,258 @@
+# Graphiti MCP server — the write/read interface to the neo4j "brain".
+# Spike-validated 2026-08-29: ornith15 extraction quality good, temporal
+# invalidation works (~20% noise on same-timestamp feeds; real event
+# reference_time reduces it). Episodes go to group_id "main"; the spike's
+# test data lives in group_id "spike".
+#
+# LLM + embeddings via spark-llamaswap (ornith15 + always-resident embed,
+# Qwen3-Embedding-0.6B). SEMAPHORE_LIMIT=4 measured safe: KV cache <1%
+# during spike. Everything stays on ornith15 — never point this at a
+# model that would trigger a llama-swap eviction. (Minis tried and
+# reverted 2026-09-04; see the llm block.)
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: graphiti-mcp-config
+  namespace: ai-services
+  labels:
+    app: graphiti-mcp
+data:
+  # ponytail: upstream bug workaround — graphiti builds FastMCP() on the SDK
+  # default host 127.0.0.1, which auto-enables localhost-only DNS-rebinding
+  # protection BEFORE graphiti rebinds to 0.0.0.0, and the setting is passed
+  # explicitly so no env var can override it. Any client whose Host header
+  # isn't localhost gets 421. The nginx sidecar rewrites Host; drop it when
+  # upstream exposes transport_security config.
+  # Deployed as an nginx envsubst template (/etc/nginx/templates) so the
+  # bearer token comes from the sealed graphiti-brain-token secret. The MCP
+  # server itself has no auth and includes destructive tools (clear_graph),
+  # so the sidecar is the auth boundary for BOTH the NodePort and in-cluster
+  # clients. envsubst only touches ${BRAIN_TOKEN}; nginx $vars are untouched.
+  default.conf.template: |
+    server {
+      listen 8080;
+      location / {
+        if ($http_authorization != "Bearer ${BRAIN_TOKEN}") { return 401; }
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host localhost:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+      }
+    }
+  config.yaml: |
+    server:
+      transport: "http"
+      host: "0.0.0.0"
+      port: 8000
+    llm:
+      # Extraction tried on the Mac mini pair 2026-09-04 and REVERTED the
+      # same night: with Qwen's thinking off the JSON was correct, but
+      # graphiti's pretty-printed entity lists overflow 4096 output tokens
+      # on long episodes ("Unterminated string"), and at 23 tok/s a bigger
+      # cap means six minutes per call. ornith15 does an episode in ~125 s.
+      # The minis remain the cheap tier for the improvement loop.
+      provider: "openai"
+      model: "ornith15"
+      # 8192: ornith15 thinks before it answers and graphiti cannot turn that
+      # off per request; at 4096 the reasoning ate the budget on long episodes
+      # and the content came back empty ("LLM returned an empty response",
+      # episode dropped). Keep episodes short too (~2k chars).
+      max_tokens: 8192
+      structured_output_mode: "json_schema"
+      providers:
+        openai:
+          api_key: ${OPENAI_API_KEY}
+          api_url: "http://spark-llamaswap.ai-services.svc.cluster.local:9090/v1"
+    embedder:
+      provider: "openai"
+      model: "embed"
+      dimensions: 1024
+      providers:
+        openai:
+          api_key: ${OPENAI_API_KEY}
+          api_url: "http://spark-llamaswap.ai-services.svc.cluster.local:9090/v1"
+    database:
+      provider: "neo4j"
+      providers:
+        neo4j:
+          uri: ${NEO4J_URI}
+          username: ${NEO4J_USER}
+          password: ${NEO4J_PASSWORD}
+          database: ${NEO4J_DATABASE}
+    graphiti:
+      group_id: ${GRAPHITI_GROUP_ID}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: graphiti-mcp
+  namespace: ai-services
+  labels:
+    app: graphiti-mcp
+    app.kubernetes.io/name: graphiti-mcp
+    app.kubernetes.io/component: agent-memory
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: graphiti-mcp
+  template:
+    metadata:
+      labels:
+        app: graphiti-mcp
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: graphiti-mcp
+          # Own build from getzep/graphiti main @ c18d677: the published
+          # zepai image (Mar 2026) predates custom LLM endpoints — its
+          # factory drops base_url, so the LLM path can only reach
+          # api.openai.com. Built WITHOUT the providers/azure extras
+          # (sentence-transformers pulls 2.5GB of CUDA libs; 2952MB -> 168MB).
+          # Rebuild: docker build --platform linux/amd64 --provenance=false
+          #   --sbom=false -f mcp_server/docker/Dockerfile.standalone
+          #   (sync line patched to `uv sync --no-group dev`)
+          image: git.example.com/homelab/graphiti-mcp:main-c18d677-slim2
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: CONFIG_PATH
+              value: /app/mcp/config/config.yaml
+            - name: NEO4J_URI
+              value: bolt://neo4j.database.svc.cluster.local:7687
+            - name: NEO4J_USER
+              value: neo4j
+            - name: NEO4J_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: graphiti-neo4j
+                  key: password
+            - name: NEO4J_DATABASE
+              value: neo4j
+            - name: GRAPHITI_GROUP_ID
+              value: main
+            - name: SEMAPHORE_LIMIT
+              value: "4"
+            - name: OPENAI_API_KEY
+              value: none
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          volumeMounts:
+            - name: config
+              mountPath: /app/mcp/config/config.yaml
+              subPath: config.yaml
+              readOnly: true
+          readinessProbe:
+            tcpSocket:
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 30
+        - name: host-rewrite
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 8080
+              name: mcp
+          env:
+            - name: BRAIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: graphiti-brain-token
+                  key: token
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nginx/templates/default.conf.template
+              subPath: default.conf.template
+              readOnly: true
+          resources:
+            requests:
+              memory: "16Mi"
+              cpu: "10m"
+            limits:
+              memory: "64Mi"
+              cpu: "100m"
+      volumes:
+        - name: config
+          configMap:
+            name: graphiti-mcp-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: graphiti-mcp
+  namespace: ai-services
+  labels:
+    app: graphiti-mcp
+    app.kubernetes.io/name: graphiti-mcp
+    app.kubernetes.io/component: agent-memory
+spec:
+  selector:
+    app: graphiti-mcp
+  ports:
+    # clients enter through the host-rewrite sidecar (see workaround note).
+    # NodePort 30800 lets off-cluster clients (Claude Code on the Mac) use
+    # the brain: http://<any-node>:30800/mcp
+    - port: 8000
+      targetPort: 8080
+      nodePort: 30800
+      name: http
+  type: NodePort
+---
+# Governance convention (see root CLAUDE.md): LLM-driven service ships with
+# an egress allowlist. This one may talk to DNS, the spark (LLM+embeds),
+# and neo4j — nothing else, so a prompt-injected episode can't exfiltrate.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: graphiti-mcp-egress
+  namespace: ai-services
+spec:
+  podSelector:
+    matchLabels:
+      app: graphiti-mcp
+  policyTypes:
+    - Egress
+  egress:
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Spark llama-swap over LAN (Deco-pinned .69; see spark-llamaswap.yaml): embeddings.
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.69/32
+      ports:
+        - protocol: TCP
+          port: 9090
+    # Mini-2 llama-server (Qwen3.6-35B-A3B split across the minis): extraction LLM.
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.63/32
+      ports:
+        - protocol: TCP
+          port: 8080
+    # neo4j bolt in the database namespace.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: database
+      ports:
+        - protocol: TCP
+          port: 7687

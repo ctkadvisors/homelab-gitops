@@ -1,0 +1,94 @@
+# Local AI Homelab GitOps Guidelines
+
+## Infrastructure as Code (IaC) Principles
+
+- **GitOps-First Approach**: All infrastructure changes MUST be committed to Git and deployed via ArgoCD. Never apply manual fixes to running containers - always commit changes first, then push to trigger GitOps deployment.
+- **Declarative Configuration**: Use Kustomize for all Kubernetes manifests with base + overlay pattern for environment management.
+- **Immutable Infrastructure**: Prefer recreating deployments over patching when dealing with immutable fields (selectors, ports).
+- **Version Control Everything**: All configurations, scripts, and documentation must be tracked in Git with meaningful commit messages.
+
+## GitOps Workflow Standards
+
+- **Repository Structure**: Use `k8s-kustomized/` for Kustomize-based manifests with `base/` and `overlays/production/` structure.
+- **ArgoCD Applications**: Organize services into logical ArgoCD applications (ai-services, networking, infrastructure, automation).
+- **Sync Policies**: Enable auto-sync with self-healing for non-critical applications, manual sync for networking components.
+- **Conflict Resolution**: When encountering immutable field errors, delete existing resources and let ArgoCD recreate them with correct configuration.
+
+## Kubernetes Best Practices
+
+- **Resource Management**: Always specify CPU/memory requests and limits for all containers, especially on resource-constrained nodes.
+- **Node Scheduling**: Use nodeSelector and nodeAffinity to properly schedule workloads (GPU workloads on Jetson nodes, control plane services on EliteMini).
+- **Service Selectors**: Ensure service selectors exactly match pod labels to avoid endpoint issues.
+- **Namespace Organization**: Use dedicated namespaces for different service categories (ai-services, automation, ingress-system).
+
+## GPU Infrastructure Requirements
+
+- **Ollama Version**: Must use Ollama 0.9.0 or later - earlier versions cannot run without GPU.
+- **NVIDIA Device Plugin**: Required for GPU resource allocation - deploy v0.14.5 or later.
+- **Jetson Configuration**: Configure as K3s agents with `nvidia.com/gpu=true` and `node-type=gpu-worker` labels.
+- **GPU Resource Requests**: Always specify `nvidia.com/gpu: "1"` in both requests and limits for GPU workloads.
+
+## Networking and DNS Configuration
+
+- **DNS Strategy**: Use *.example.com domain with DNS provider for external resolution to EliteMini IP (192.168.131.111).
+- **Network Access**: Services accessible locally on network and remotely via Tailscale. Off-network access requires Tailscale connection.
+- **MetalLB IP Pool**: Use 192.168.131.200-210 range for LoadBalancer services, verified safe with AmpliFi Alien router.
+- **Traefik Configuration**: Use v3.0 with proper SSL/TLS configuration and ingress routes for all services.
+- **Certificate Management**: Distribute TLS secrets to all namespaces requiring HTTPS ingress.
+
+## Monitoring and Observability
+
+- **Resource Monitoring**: Implement comprehensive monitoring for all nodes (CPU >80%, Memory >85%, Temperature >70°C are critical thresholds).
+- **GPU Monitoring**: Use jetson-exporter for NVIDIA GPU metrics collection and monitoring on Jetson nodes.
+- **Service Health**: Configure proper readiness and liveness probes for all applications.
+- **Metrics Server**: Deploy for basic Kubernetes resource metrics collection.
+
+## Development and Testing Practices
+
+- **Validation Before Deployment**: Always test Kustomize builds with `kubectl kustomize` before applying.
+- **Incremental Changes**: Make small, focused changes and test each one individually.
+- **Backup Strategy**: Maintain backup procedures for persistent data and cluster state.
+- **Documentation**: Update documentation with each infrastructure change, including troubleshooting steps.
+
+## Security and Access Control
+
+- **Secrets Management**: Never commit secrets to Git - use Kubernetes secrets and proper secret distribution.
+- **RBAC**: Implement proper role-based access control for ArgoCD and cluster access.
+- **Network Policies**: Consider implementing network policies for service isolation.
+- **Image Security**: Use specific image tags in production overlays, avoid 'latest' tags.
+
+## Troubleshooting Guidelines
+
+- **ArgoCD Sync Issues**: Check application controller logs, verify repository access, and look for immutable field conflicts.
+- **Service Connectivity**: Verify service selectors match pod labels, check endpoints population, and validate DNS resolution.
+- **GPU Workloads**: Ensure NVIDIA device plugin is running and GPU resources are properly allocated.
+- **DNS Resolution**: Test both local and network-wide resolution, check router DNS settings and client cache.
+
+## Performance Optimization
+
+- **RPi Resource Limits**: Set conservative limits for RPi-hosted services due to limited resources.
+- **GPU Scheduling**: Pin GPU workloads to appropriate Jetson nodes using node selectors.
+- **Storage Strategy**: Use NFS for shared storage, local storage for performance-critical workloads.
+- **Image Architecture**: Ensure ARM64 compatibility for all container images on RPi.
+
+## Emergency Procedures
+
+- **GitOps Failure**: Maintain traditional deployment scripts as backup for emergency situations.
+- **Cluster Recovery**: Use Ansible playbooks for complete cluster rebuild if needed.
+- **Service Restoration**: Keep backup configurations and data restoration procedures documented.
+- **Rollback Strategy**: Use Git revert for configuration rollbacks, ArgoCD for application rollbacks.
+
+## EXTREMELY IMPORTANT:
+
+- IT IS FORBIDDEN TO MODIFY ANYTHING ON THE CLUSTER DIRECTLY
+- ALL CHANGES MUST BE MADE THROUGH GITOPS (KUSTOMIZE MANIFESTS)
+- DO NOT USE KUBECTL TO EDIT RESOURCES
+- DO NOT USE KUBECTL TO CREATE RESOURCES
+- DO NOT USE KUBECTL TO DELETE RESOURCES
+- DO NOT USE KUBECTL TO APPLY RAW MANIFESTS
+- DO NOT USE KUBECTL TO PATCH RESOURCES
+- YOU MAY ONLY USE KUBECTL TO READ RESOURCE STATE
+- YOU MAY ONLY USE KUBECTL TO RESTART PODS
+- YOU MAY ONLY USE KUBECTL TO DELETE PODS
+- YOU MAY ONLY USE KUBECTL TO APPLY KUSTOMIZE MANIFESTS
+- YOU MAY ONLY USE KUBECTL TO TEST CHANGES BEFORE COMMITTING

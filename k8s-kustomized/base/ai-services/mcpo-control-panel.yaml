@@ -1,0 +1,86 @@
+# MCPO Control Panel - Web UI for managing MCPO instances
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcpo-control-panel
+  namespace: ai-services
+  labels:
+    app: mcpo-control-panel
+    app.kubernetes.io/name: mcpo-control-panel
+    app.kubernetes.io/component: web-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcpo-control-panel
+  template:
+    metadata:
+      labels:
+        app: mcpo-control-panel
+    spec:
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: "true"
+      containers:
+        - name: mcpo-control-panel
+          image: ghcr.io/chrisknu/mcpo-control-panel:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8083
+              name: http
+          env:
+            - name: MCPO_MANAGER_HOST
+              value: "0.0.0.0"
+            - name: MCPO_MANAGER_PORT
+              value: "8083"
+            - name: MCPO_MANAGER_WORKERS
+              value: "1"
+            - name: MCPO_MANAGER_DATA_DIR
+              value: "/app/data"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "50m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+          livenessProbe:
+            httpGet:
+              path: /ui
+              port: 8083
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ui
+              port: 8083
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+      volumes:
+        - name: data
+          hostPath:
+            path: /opt/mcpo-control-panel-data
+            type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcpo-control-panel
+  namespace: ai-services
+  labels:
+    app: mcpo-control-panel
+    app.kubernetes.io/name: mcpo-control-panel
+    app.kubernetes.io/component: web-ui
+spec:
+  selector:
+    app: mcpo-control-panel
+  ports:
+    - port: 8083
+      targetPort: 8083
+      name: http
+  type: ClusterIP

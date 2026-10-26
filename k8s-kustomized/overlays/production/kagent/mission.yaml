@@ -1,0 +1,629 @@
+# mission — "do this for me" from Telegram.
+#
+# The concierge calls http.mission_launch (tool-gateway http provider
+# `mission`, sealed providers JSON) with a brief. mission-launcher, a
+# deterministic stdlib service (services/mission-launcher, no model, no git
+# or brain credentials), creates a Job from the template below. The Job
+# is improve-daily's pipeline with investigate+adjudicate replaced by a
+# `brief` stage: brief -> implement -> test -> publish. Same ConfigMap,
+# same isolation (model stages hold no credentials; publish alone holds
+# the tokens and reports the PR or halt reason to Telegram + the brain).
+#
+# Authority line (Chris, 2026-09-02): code changes land as PRs only —
+# pr-reviewer judges them like any other.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mission-launcher
+  namespace: kagent-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mission-launcher
+  namespace: kagent-system
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mission-launcher
+  namespace: kagent-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mission-launcher
+subjects:
+  - kind: ServiceAccount
+    name: mission-launcher
+    namespace: kagent-system
+---
+# The Job the launcher stamps out. JSON because the launcher fills it with
+# json.load and never parses YAML. Stage scripts + prompts come from the
+# improve-daily ConfigMap; secrets mount only on publish.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mission-job-template
+  namespace: kagent-system
+data:
+  job-template.json: |
+    {
+      "apiVersion": "batch/v1",
+      "kind": "Job",
+      "metadata": {
+        "name": "PLACEHOLDER",
+        "namespace": "kagent-system",
+        "labels": {
+          "app": "mission"
+        }
+      },
+      "spec": {
+        "backoffLimit": 0,
+        "activeDeadlineSeconds": 5400,
+        "ttlSecondsAfterFinished": 21600,
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "mission"
+            }
+          },
+          "spec": {
+            "restartPolicy": "Never",
+            "serviceAccountName": "fleet-stage",
+            "securityContext": {"runAsUser": 1001, "runAsGroup": 1001, "fsGroup": 1001},
+            "enableServiceLinks": false,
+            "initContainers": [
+              {
+                "name": "init-cache",
+                "image": "busybox:1.36",
+                "command": ["sh", "-c", "mkdir -p /cache/npm /cache/pip /cache/uv && chown -R 1001:1001 /cache"],
+                "securityContext": {"runAsUser": 0, "runAsGroup": 0},
+                "resources": {"limits": {"cpu": "100m", "memory": "32Mi"}, "requests": {"cpu": "5m", "memory": "8Mi"}},
+                "volumeMounts": [{"name": "cache", "mountPath": "/cache"}]
+              },
+              {
+                "name": "scripts",
+                "image": "git.example.com/homelab/fleet-scripts:20260916-366f92e",
+                "command": [
+                  "sh",
+                  "-c",
+                  "cp -r /app/. /fleet/"
+                ],
+                "resources": {
+                  "requests": {
+                    "memory": "32Mi",
+                    "cpu": "10m"
+                  },
+                  "limits": {
+                    "memory": "128Mi",
+                    "cpu": "200m"
+                  }
+                },
+                "volumeMounts": [
+                  {
+                    "name": "fleet",
+                    "mountPath": "/fleet"
+                  }
+                ]
+              },
+              {
+                "name": "clone",
+                "image": "git.example.com/homelab/fleet-scripts:20260916-366f92e",
+                "command": [
+                  "python3",
+                  "/app/scripts/clone.py"
+                ],
+                "env": [
+                  {
+                    "name": "REPO",
+                    "value": "ctkadvisors/kagent"
+                  }
+                ],
+                "resources": {
+                  "requests": {
+                    "memory": "64Mi",
+                    "cpu": "50m"
+                  },
+                  "limits": {
+                    "memory": "256Mi",
+                    "cpu": "500m"
+                  }
+                },
+                "volumeMounts": [
+                  {
+                    "name": "workspace",
+                    "mountPath": "/workspace"
+                  },
+                  {
+                    "name": "github-app",
+                    "mountPath": "/secrets/github-app",
+                    "readOnly": true
+                  }
+                ]
+              },
+              {
+                "name": "brief",
+                "image": "git.example.com/homelab/agent-coder:20260915-lsp",
+                "command": [
+                  "python3",
+                  "/fleet/scripts/brief.py"
+                ],
+                "resources": {
+                  "requests": {
+                    "memory": "128Mi",
+                    "cpu": "50m"
+                  },
+                  "limits": {
+                    "memory": "512Mi",
+                    "cpu": "500m"
+                  }
+                },
+                "volumeMounts": [
+                  {
+                    "name": "config",
+                    "mountPath": "/config",
+                    "readOnly": true
+                  },
+                  {
+                    "name": "workspace",
+                    "mountPath": "/workspace"
+                  },
+                  {
+                    "name": "fleet",
+                    "mountPath": "/fleet",
+                    "readOnly": true
+                  },
+                  {"name": "cache", "mountPath": "/workspace/cache"},
+                  {"name": "ledger-ro", "mountPath": "/secrets/ledger-ro", "readOnly": true}
+                ]
+              },
+              {
+                "name": "implement",
+                "image": "git.example.com/homelab/agent-coder:20260915-lsp",
+                "command": [
+                  "sh",
+                  "/fleet/scripts/stage.sh",
+                  "implement"
+                ],
+                "env": [
+                  {"name": "LSP_STAGES", "value": ""},
+                  {"name": "JUDGE_URL", "value": "http://spark-llamaswap.ai-services.svc.cluster.local:9090/v1"},
+                  {"name": "JUDGE_MODEL", "value": "qwen38"},
+                  {"name": "JUDGE_MAX_TOKENS", "value": "16384"},
+                  {
+                    "name": "OPENAI_API_KEY",
+                    "value": "local"
+                  },
+                  {
+                    "name": "DSH_PERMISSION_MODE",
+                    "value": "danger-full-access"
+                  },
+                  {"name": "npm_config_cache", "value": "/workspace/cache/npm"},
+                  {"name": "PIP_CACHE_DIR", "value": "/workspace/cache/pip"},
+                  {"name": "UV_CACHE_DIR", "value": "/workspace/cache/uv"},
+                  {"name": "LEDGER_DSN_FILE", "value": "/secrets/ledger-ro/dsn"}
+                ],
+                "resources": {
+                  "requests": {
+                    "memory": "512Mi",
+                    "cpu": "250m"
+                  },
+                  "limits": {
+                    "memory": "8Gi",
+                    "cpu": "2000m"
+                  }
+                },
+                "volumeMounts": [
+                  {
+                    "name": "config",
+                    "mountPath": "/config",
+                    "readOnly": true
+                  },
+                  {
+                    "name": "workspace",
+                    "mountPath": "/workspace"
+                  },
+                  {
+                    "name": "fleet",
+                    "mountPath": "/fleet",
+                    "readOnly": true
+                  },
+                  {"name": "cache", "mountPath": "/workspace/cache"},
+                  {"name": "ledger-ro", "mountPath": "/secrets/ledger-ro", "readOnly": true}
+                ]
+              },
+              {
+                "name": "test",
+                "image": "git.example.com/homelab/agent-coder:20260915-lsp",
+                "command": [
+                  "sh",
+                  "/fleet/scripts/stage.sh",
+                  "test"
+                ],
+                "env": [
+                  {
+                    "name": "OPENAI_API_KEY",
+                    "value": "local"
+                  },
+                  {
+                    "name": "DSH_PERMISSION_MODE",
+                    "value": "danger-full-access"
+                  },
+                  {"name": "npm_config_cache", "value": "/workspace/cache/npm"},
+                  {"name": "PIP_CACHE_DIR", "value": "/workspace/cache/pip"},
+                  {"name": "UV_CACHE_DIR", "value": "/workspace/cache/uv"},
+                  {"name": "LEDGER_DSN_FILE", "value": "/secrets/ledger-ro/dsn"}
+                ],
+                "resources": {
+                  "requests": {
+                    "memory": "512Mi",
+                    "cpu": "250m"
+                  },
+                  "limits": {
+                    "memory": "8Gi",
+                    "cpu": "2000m"
+                  }
+                },
+                "volumeMounts": [
+                  {
+                    "name": "config",
+                    "mountPath": "/config",
+                    "readOnly": true
+                  },
+                  {
+                    "name": "workspace",
+                    "mountPath": "/workspace"
+                  },
+                  {
+                    "name": "fleet",
+                    "mountPath": "/fleet",
+                    "readOnly": true
+                  },
+                  {"name": "cache", "mountPath": "/workspace/cache"},
+                  {"name": "ledger-ro", "mountPath": "/secrets/ledger-ro", "readOnly": true}
+                ]
+              }
+            ],
+            "containers": [
+              {
+                "name": "publish",
+                "image": "git.example.com/homelab/agent-coder:20260915-lsp",
+                "command": [
+                  "python3",
+                  "/fleet/scripts/publish.py"
+                ],
+                "env": [
+                  {
+                    "name": "BRAIN_URL",
+                    "value": "http://graphiti-mcp.ai-services.svc.cluster.local:8000/mcp"
+                  },
+                  {
+                    "name": "TELEGRAM_CHAT_ID",
+                    "value": "0"
+                  }
+                ],
+                "resources": {
+                  "requests": {
+                    "memory": "128Mi",
+                    "cpu": "50m"
+                  },
+                  "limits": {
+                    "memory": "512Mi",
+                    "cpu": "500m"
+                  }
+                },
+                "volumeMounts": [
+                  {
+                    "name": "config",
+                    "mountPath": "/config",
+                    "readOnly": true
+                  },
+                  {
+                    "name": "workspace",
+                    "mountPath": "/workspace"
+                  },
+                  {
+                    "name": "git-token",
+                    "mountPath": "/secrets/git",
+                    "readOnly": true
+                  },
+                  {
+                    "name": "telegram",
+                    "mountPath": "/secrets/telegram",
+                    "readOnly": true
+                  },
+                  {
+                    "name": "brain-token",
+                    "mountPath": "/secrets/brain",
+                    "readOnly": true
+                  },
+                  {
+                    "name": "ledger",
+                    "mountPath": "/secrets/ledger",
+                    "readOnly": true
+                  },
+                  {
+                    "name": "fleet",
+                    "mountPath": "/fleet",
+                    "readOnly": true
+                  },
+                  {
+                    "name": "github-app",
+                    "mountPath": "/secrets/github-app",
+                    "readOnly": true
+                  }
+                ]
+              }
+            ],
+            "volumes": [
+              {
+                "name": "config",
+                "configMap": {
+                  "name": "improve-daily"
+                }
+              },
+              {
+                "name": "git-token",
+                "secret": {
+                  "secretName": "kagent-builder-git-token"
+                }
+              },
+              {
+                "name": "telegram",
+                "secret": {
+                  "secretName": "kagent-telegram-bot-token"
+                }
+              },
+              {
+                "name": "brain-token",
+                "secret": {
+                  "secretName": "graphiti-brain-token",
+                  "optional": true
+                }
+              },
+              {
+                "name": "ledger",
+                "secret": {
+                  "secretName": "fleet-ledger-dsn",
+                  "optional": true
+                }
+              },
+              {
+                "name": "workspace",
+                "emptyDir": {}
+              },
+              {"name": "cache", "hostPath": {"path": "/var/lib/fleet-cache", "type": "DirectoryOrCreate"}},
+              {"name": "ledger-ro", "secret": {"secretName": "fleet-ledger-reader-dsn", "optional": true}},
+              {
+                "name": "fleet",
+                "emptyDir": {}
+              },
+              {
+                "name": "github-app",
+                "secret": {
+                  "secretName": "github-app",
+                  "optional": true
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mission-launcher
+  namespace: kagent-system
+  labels:
+    app: mission-launcher
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mission-launcher
+  template:
+    metadata:
+      labels:
+        app: mission-launcher
+    spec:
+      serviceAccountName: mission-launcher
+      nodeSelector:
+        node-type: compute-worker
+      containers:
+        - name: launcher
+          image: git.example.com/homelab/fleet-scripts:20260916-366f92e
+          command: ["python3", "/app/scripts/launcher.py"]
+          ports:
+            - containerPort: 8080
+          env:
+            - name: PYTHONUNBUFFERED   # stdout is a pipe; 6 h of launcher prints never reached kubectl logs (2026-09-13)
+              value: "1"
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: MISSION_TEMPLATE
+              value: /config/job-template.json
+            - name: MAX_ATTEMPTS
+              value: "3"
+          volumeMounts:
+            - name: template
+              mountPath: /config
+              readOnly: true
+            # Allowed repos = the GitHub App's installation (read via the App).
+            - name: github-app
+              mountPath: /secrets/github-app
+              readOnly: true
+            # The ledger: one candidate, MAX_ATTEMPTS runs, refuse while one runs.
+            - name: ledger
+              mountPath: /secrets/ledger
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "10m"
+            limits:
+              memory: "512Mi"   # exec-run ideator measurements were OOM-killed at 128Mi
+              cpu: "200m"
+      volumes:
+        - name: template
+          configMap:
+            name: mission-job-template
+        - name: github-app
+          secret:
+            secretName: github-app
+        - name: ledger
+          secret:
+            secretName: fleet-ledger-dsn
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mission-launcher
+  namespace: kagent-system
+spec:
+  selector:
+    app: mission-launcher
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+# Only the tool-gateway may launch missions.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mission-launcher-ingress
+  namespace: kagent-system
+spec:
+  podSelector:
+    matchLabels:
+      app: mission-launcher
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: kagent-operator
+              app.kubernetes.io/component: tool-gateway
+        - podSelector:                  # the chat adapters put [fleet now] (health, memory) into every turn (2026-09-09)
+            matchLabels:
+              app.kubernetes.io/name: kagent-operator
+              app.kubernetes.io/component: channel-telegram-adapter
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: kagent-operator
+              app.kubernetes.io/component: channel-whatsapp-adapter
+        - podSelector:
+            matchLabels:
+              app: fleet-console        # retry from the page
+        - podSelector:
+            matchLabels:
+              app: fleet-reconcile      # board-first retry on idle capacity
+        - podSelector:                  # stages read failing-check logs (GET /checks/...)
+            matchExpressions:
+              - { key: app, operator: In, values: [mission, improve-daily] }
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# Mission Jobs need what improve-daily's pods need: DNS, HTTPS, spark, brain.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mission-egress
+  namespace: kagent-system
+spec:
+  podSelector:
+    matchLabels:
+      app: mission
+  policyTypes:
+    - Egress
+  egress:
+    # The ledger (fleet/ledger.py) on the shared postgres.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: database
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # 443 everywhere except the MetalLB address: GitHub, Telegram and the
+    # registry, but not fleet.example.com, whose LAN page carries the human
+    # steering endpoints. Stage pods talk to the forum on its own port below.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.200/32
+      ports:
+        - protocol: TCP
+          port: 443
+    # The forum, in-cluster and forum-only (console.py FORUM_PORT): ask, say what
+    # you did, stop. Never the LAN page.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: fleet-console
+      ports:
+        - protocol: TCP
+          port: 8081
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.69/32
+      ports:
+        - protocol: TCP
+          port: 9090
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ai-services
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8000
+    # Research: SearXNG (the same search the concierge has), JSON API.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: search
+          podSelector:
+            matchLabels:
+              app: searxng
+      ports:
+        - protocol: TCP
+          port: 8080
+    # Failing-check logs through the launcher (GET /checks/<owner>/<repo>/<sha>).
+    - to:
+        - podSelector:
+            matchLabels:
+              app: mission-launcher
+      ports:
+        - protocol: TCP
+          port: 8080
+    # Node-level actions, allow-listed and recorded (fleet-node-runner).
+    - to:
+        - podSelector:
+            matchLabels:
+              app: fleet-node-runner
+      ports:
+        - protocol: TCP
+          port: 8080

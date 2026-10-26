@@ -1,0 +1,39 @@
+---
+# Kata Containers microVM RuntimeClasses.
+#
+# These are INERT until the kata runtime handler is registered in k3s's
+# containerd on a node AND that node is labelled kata-capable. See README.md
+# in this dir for the node-install runbook. Applying these early is harmless —
+# a RuntimeClass with no matching handler just can't schedule pods.
+#
+# We use kata-qemu / kata-clh (Cloud Hypervisor), NOT kata-fc (Firecracker):
+# Firecracker requires the devmapper snapshotter, which k3s's embedded
+# containerd does not ship. qemu/clh run on the default overlayfs.
+#
+# Target node: elitemini2 (compute-worker, x86 bare metal, /dev/kvm present).
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: kata-qemu
+handler: kata-qemu
+# Only schedule kata pods onto nodes the kata-deploy DaemonSet has marked ready.
+scheduling:
+  nodeSelector:
+    katacontainers.io/kata-runtime: "true"
+overhead:
+  podFixed:
+    memory: "160Mi"
+    cpu: "250m"
+---
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: kata-clh
+handler: kata-clh
+scheduling:
+  nodeSelector:
+    katacontainers.io/kata-runtime: "true"
+overhead:
+  podFixed:
+    memory: "130Mi"
+    cpu: "250m"

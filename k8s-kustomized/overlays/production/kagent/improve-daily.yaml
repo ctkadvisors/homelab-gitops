@@ -1,0 +1,618 @@
+# improve-daily — recursive self-improvement as a STAGED PIPELINE
+# (Chris 2026-09-01: investigator → legitimacy judge (weighted pro/con)
+# → coder → tester → merge, each stage with explicit criteria and
+# reasoning, traceable by humans AND other agents).
+#
+# Five stages, sequential initContainers + one publish container. Each
+# model stage is a FRESH dsh session (no shared context — the judge
+# can't be steered by the investigator, the tester can't be steered by
+# the coder). Every stage writes a structured artifact to
+# /workspace/p/; the next stage consumes it, and publish assembles the
+# full trace into (a) the PR body — which the pr-reviewer's judge
+# reads, (b) a graphiti brain episode — readable by every agent with
+# mcp.search tools, (c) Telegram. Stage halts write a `stop` marker
+# with a reason instead of crashing, so a halted pipeline still leaves
+# a trace of WHY.
+#
+# Token/model isolation: no model container mounts any credential; the
+# deterministic publish container holds the tokens and runs no model.
+# Guard: skips while a previous agent/dsh-daily-* PR is open.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: improve-daily
+  namespace: kagent-system
+  labels:
+    app: improve-daily
+data:
+  dsh-patch.yml: |
+    # ornith15 is served by vLLM with a Qwen-style chat template. dsh's deepseek
+    # provider sends thinking:{type:disabled}, which vLLM ignores, so every step
+    # reasoned until max_tokens (4096, then 16384) and returned nothing. pi-ai's
+    # qwen-chat-template format sends chat_template_kwargs.enable_thinking=false,
+    # which the template honours (reasoning null, 4 tokens for "17*23").
+    - id: llm-pi-ai
+      config:
+        providers:
+          ornith-vllm:
+            apiKeyEnv: OPENAI_API_KEY
+            api: openai-completions
+            baseURL: http://spark-llamaswap.ai-services.svc.cluster.local:9090/v1
+            defaultContextWindow: 262144
+            defaultMaxTokens: 32768   # a long implement step is 10-20k tokens of edits and output; 16k truncated them
+            reasoning: off
+            compat:
+              thinkingFormat: qwen-chat-template
+              supportsReasoningEffort: false
+            models:
+              - id: ornith15
+                name: Ornith15
+                reasoningEfforts:
+                  off:
+                  low: low
+                  medium: medium
+                  high: high
+    - id: agent-default-model
+      config:
+        provider: ornith-vllm
+        model: ornith15
+    - id: skill-filesystem
+      config:
+        customSkillDirs: ['/fleet/skills']   # the tool paragraphs, loaded on demand (2026-09-09)
+    - insert:
+        - id: forum-questions          # ask_user_question -> a forum post, wait for the reply (harness change 3)
+          name: '@homelab/dsh-forum-questions'
+          config:
+            forumUrl: !!js process.env.FORUM_URL || 'http://fleet-console.kagent-system.svc:8081'
+            author: !!js process.env.FORUM_AUTHOR || 'implementer'
+            timeoutMs: !!js Number(process.env.FORUM_ASK_TIMEOUT_MS || 1200000)
+            pollMs: !!js Number(process.env.FORUM_ASK_POLL_MS || 30000)
+        - id: tool-ask-user
+          name: '@deepseek-ai/dsh-tool-ask-user'
+  # The judge (2026-09-08): Qwen3.8-27B dense, resident beside ornith15 on the
+  # spark (llama-swap `qwen38`, persistent group `judge`), thinking ON. Used by
+  # the stages that decide (investigate, adjudicate, test) and by pr-reviewer;
+  # ornith15 keeps the hands (implement, fix passes, chat).
+  dsh-patch-judge.yml: |
+    - id: llm-pi-ai
+      config:
+        providers:
+          qwen38-llamacpp:
+            apiKeyEnv: OPENAI_API_KEY
+            api: openai-completions
+            baseURL: http://spark-llamaswap.ai-services.svc.cluster.local:9090/v1
+            defaultContextWindow: 96000   # llama-server --ctx-size 262144 --parallel 2: one slot is 131072; 96k in + 32k out fits (hybrid attention: ~32 KB/token of KV)
+            defaultMaxTokens: 32768
+            reasoning: medium
+            compat:
+              thinkingFormat: qwen-chat-template
+              supportsReasoningEffort: false
+            models:
+              - id: qwen38
+                name: Qwen3.8-27B (judge)
+                reasoningEfforts:
+                  off:
+                  low: low
+                  medium: medium
+                  high: high
+    - id: agent-default-model
+      config:
+        provider: qwen38-llamacpp
+        model: qwen38
+    - id: skill-filesystem
+      config:
+        customSkillDirs: ['/fleet/skills']
+    - insert:
+        - id: forum-questions          # ask_user_question -> a forum post, wait for the reply (harness change 3)
+          name: '@homelab/dsh-forum-questions'
+          config:
+            forumUrl: !!js process.env.FORUM_URL || 'http://fleet-console.kagent-system.svc:8081'
+            author: !!js process.env.FORUM_AUTHOR || 'implementer'
+            timeoutMs: !!js Number(process.env.FORUM_ASK_TIMEOUT_MS || 1200000)
+            pollMs: !!js Number(process.env.FORUM_ASK_POLL_MS || 30000)
+        - id: tool-ask-user
+          name: '@deepseek-ai/dsh-tool-ask-user'
+  investigate.txt: |
+    ROLE: investigator. You research; you NEVER edit code in this stage.
+
+    You are inside a git clone of the repository named at the end of
+    this prompt (REPOSITORY). When it is kagent, that is the K3s
+    agent-farm operator that runs you (~30 TypeScript packages under
+    packages/); when it is new_localai, that is the fleet's own scripts
+    (services/fleet-scripts) and manifests (k8s-kustomized). Find
+    improvement candidates.
+
+    METHOD, in this order:
+    0. Read /workspace/p/00-evidence.json: the fleet's OWN failed
+       AgentTasks from the last 7 days, grouped by error string with
+       counts. For each recurring error, grep the exact string into
+       packages/ and read the code that produces it. Ask: is the error
+       wrong, unlabeled (a real cause discarded on the way to the
+       status), or a hard-coded limit the fleet outgrew? A candidate
+       that explains an observed failure outranks anything found by
+       grepping. Put the task name in an "evidence_task" field. A forum
+       item whose text opens with "[idea:<id>]" is an idea from the
+       archive: copy that token verbatim into the candidate's "evidence"
+       so the run can report back to the idea.
+    1. Only then: list packages/; grep TODO/FIXME in non-test .ts
+       files; skim git log; read at most 6 files that look promising.
+    No dependency installs, no builds.
+
+    CANDIDATE CRITERIA — every candidate MUST have:
+    - an OBSERVABLE defect (comment contradicting code, dead code, a
+      typo-level bug, a doc error, an obviously wrong constant) — not a
+      style preference, not a refactor idea;
+    - EVIDENCE: the exact offending line(s), quoted;
+    - a rationale stating (1) why it is wrong and (2) why fixing it is
+      low-risk;
+    - estimated diff under 300 changed lines;
+    - no files under .github/ or templates/, no Dockerfiles, lockfiles,
+      package.json, or anything named secret.
+
+    OUTPUT: write STRICT JSON to /workspace/p/01-findings.json:
+    {"candidates":[{"id":"C1","file":"packages/...","line":123,
+      "claim":"one sentence","evidence":"quoted code",
+      "rationale":"why wrong + why safe","risk":"low|medium",
+      "est_changed_lines":10}, ...]}
+    Up to 5 candidates, ranked best-first. Fewer is fine — an honest 2
+    beats a padded 5. Nothing else in the file but that JSON.
+  adjudicate.txt: |
+    ROLE: skeptical judge. Fresh eyes; you did not write the findings
+    and you must not trust them. You NEVER edit code in this stage.
+
+    Read /workspace/p/01-findings.json. For EACH candidate, open the
+    cited file at the cited lines and verify the claim yourself against
+    the actual code before scoring.
+
+    SCORING — four criteria, each 0-10, with fixed weights:
+    - correctness_confidence (0.35): is the claim ACTUALLY true of the
+      code you just read? 10 = verified beyond doubt; <=5 = you could
+      not confirm it.
+    - blast_radius_inverse (0.25): 10 = change affects only the cited
+      lines with no behavioral callers; low scores for anything other
+      code paths depend on.
+    - testability (0.20): can a later tester verify the fix
+      mechanically (syntax check, grep of callers, re-reading one
+      hunk)? 10 = trivially.
+    - reviewability (0.20): would the diff be small and self-evidently
+      correct to a reviewer seeing only the diff?
+
+    For each candidate record pros[], cons[], the four scores, and
+    weighted_total. PASS requires: weighted_total >= 7.0 AND
+    correctness_confidence >= 7 AND est_changed_lines < 300 AND no
+    forbidden paths. Select AT MOST ONE passing candidate — the highest
+    weighted_total; ties break toward smaller diff.
+
+    OUTPUT: STRICT JSON to /workspace/p/02-verdict.json:
+    {"evaluations":[{"id":"C1","pros":[...],"cons":[...],
+      "scores":{"correctness_confidence":9,"blast_radius_inverse":8,
+      "testability":9,"reviewability":9},"weighted_total":8.75,
+      "verdict":"PASS|FAIL","reasoning":"one paragraph"}],
+     "selected":"C1" or null,
+     "selection_reasoning":"why this one / why none"}
+  implement.txt: |
+    ROLE: implementer. Read /workspace/p/02-verdict.json — implement
+    EXACTLY the selected candidate's scope from
+    /workspace/p/01-findings.json. Nothing else: no drive-by fixes, no
+    formatting of untouched lines.
+
+    Verify your edit by re-reading the changed hunk in its surrounding
+    context, and with node --check (for .js) or python3 -m py_compile
+    where applicable. Installs, builds and test runs are allowed when the
+    task needs them to verify (a dependency bump, an audit, a failing
+    test): the package caches under /workspace/cache persist across runs,
+    so a second install is cheap. Keep them scoped to the task; a network
+    timeout is this node's egress, retry once and say so.
+
+    Commit with a conventional message (git add <files> && git commit).
+    Do NOT push.
+
+    Before you finish, write /workspace/p/verify.sh: the ONE command that
+    proves your change (the test or check you ran, e.g. `python3 -m unittest
+    -q` or `npm test -- <file>`), exit 0 on success. The pipeline runs it
+    after you stop; if it fails you get the output and another round. Its
+    stdout goes on the PR as the evidence the reviewer credits, so let the
+    test output print: never send it only to a file (kagent#59's verify.sh
+    printed "PASS (tail in /tmp/...)" and its PR carried no evidence).
+
+    OUTPUT: write /workspace/p/03-implementation.md containing: the
+    commit message; the output of git diff --stat origin/main..HEAD (the
+    commit is the diff, do not reproduce it); a
+    section "Scope adherence" stating how the diff maps to the selected
+    candidate and DECLARING any deviation explicitly (a silent
+    deviation is a failure); and, when this run taught you something a
+    future run would otherwise pay for again (a tool quirk, a repo
+    convention, a wrong assumption), one line per item starting
+    "LESSON: ". They become the fleet's memory. Nothing generic. And for
+    each item of WHAT WE HAVE LEARNED you actually applied, one line
+    "USED: " followed by its first ten words; only ones that changed
+    what you did.
+  test.txt: |
+    ROLE: adversarial tester. Fresh eyes. Do NOT trust
+    03-implementation.md — verify everything against the repo itself.
+
+    Read /workspace/p/01-findings.json and 02-verdict.json to learn the
+    approved scope. Then run `git diff origin/main..HEAD` and check:
+    1. scope: the diff touches ONLY what the selected candidate
+       approved — any extra file or unrelated hunk is a FAIL.
+    2. claim: the ORIGINAL code really had the claimed defect (check
+       out of the diff's context; re-read the pre-image).
+    3. correctness: the new code is right — for changed symbols, grep
+       packages/ for callers and confirm none break; node --check any
+       changed .js; re-read every changed hunk in full context.
+    4. limits: total changed lines < 300; no .github/, templates/,
+       Dockerfile, lockfile, package.json, or secret-named paths.
+
+    You REJECT rather than repair — never edit code in this stage.
+
+    OUTPUT: STRICT JSON to /workspace/p/04-test-report.json:
+    {"checks":[{"name":"scope","result":"pass|fail","detail":"..."},
+      {"name":"claim",...},{"name":"correctness",...},
+      {"name":"limits",...}],
+     "verdict":"SHIP|REJECT","reasoning":"one paragraph"}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: improve-daily
+  namespace: kagent-system
+  labels:
+    app: improve-daily
+spec:
+  # 05:15 UTC — before the 06:30 brain audit; spark is quietest overnight.
+  schedule: '15 5 * * *'
+  # Proven 2026-09-01 (proof run 3): clean halt path end-to-end with
+  # full trace — stage artifacts, stop marker, brain episode written,
+  # Telegram notified. Push/PR path uses the pattern proven by PR #4.
+  suspend: false
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 10800
+      ttlSecondsAfterFinished: 21600  # the ledger and the forum keep the record; the Job only keeps alerts firing
+      template:
+        metadata:
+          labels:
+            app: improve-daily
+        spec:
+          restartPolicy: Never
+          serviceAccountName: fleet-stage
+          securityContext: {runAsUser: 1001, runAsGroup: 1001, fsGroup: 1001}
+          enableServiceLinks: false
+          # Model stages: NO credentials mounted in any of them.
+          initContainers:
+            # The hostPath cache is created root-owned; the stages run as 1001
+            # and could not write it ("cache dir is root-owned", mission 22,
+            # 2026-09-08). fsGroup does not apply to hostPath.
+            - name: init-cache
+              image: busybox:1.36
+              command: ["sh", "-c", "mkdir -p /cache/npm /cache/pip /cache/uv && chown -R 1001:1001 /cache"]
+              securityContext: {runAsUser: 0, runAsGroup: 0}
+              resources:
+                limits: {cpu: 100m, memory: 32Mi}
+                requests: {cpu: 5m, memory: 8Mi}
+              volumeMounts:
+              - mountPath: /cache
+                name: cache
+            # Scripts come from the fleet-scripts image (services/fleet-scripts),
+            # copied once into /fleet; ConfigMap holds prompts + dsh patch only.
+            - command:
+              - sh
+              - -c
+              - cp -r /app/. /fleet/
+              image: git.example.com/homelab/fleet-scripts:20260916-366f92e
+              name: scripts
+              resources:
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+              volumeMounts:
+              - mountPath: /fleet
+                name: fleet
+            # Clone with the App credential (private repos), leave a token-free remote.
+            - command:
+              - python3
+              - /app/scripts/clone.py
+              env:
+              - name: RUN_TRIGGER
+                value: cron
+              - name: REPO
+                value: ctkadvisors/new_localai
+              image: git.example.com/homelab/fleet-scripts:20260916-366f92e
+              name: clone
+              resources:
+                limits:
+                  cpu: 500m
+                  memory: 256Mi
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+              volumeMounts:
+              - mountPath: /workspace
+                name: workspace
+              - mountPath: /secrets/github-app
+                name: github-app
+                readOnly: true
+            # Evidence first: no model, no credentials, read-only.
+            - name: collect
+              image: git.example.com/homelab/agent-coder:20260830
+              command: ["python3", "/fleet/scripts/collect.py"]
+              resources:
+                requests:
+                  memory: "64Mi"
+                  cpu: "50m"
+                limits:
+                  memory: "256Mi"
+                  cpu: "500m"
+              volumeMounts:
+                - name: config
+                  mountPath: /config
+                  readOnly: true
+                - name: fleet
+                  mountPath: /fleet
+                  readOnly: true
+                - name: workspace
+                  mountPath: /workspace
+                # new_localai#10: collect reads fleet:halt/fleet:proposal issues,
+                # reviewer feedback and the ledger; without these it degrades to
+                # workbench-only and the run halts at investigate as before.
+                - name: github-app
+                  mountPath: /secrets/github-app
+                  readOnly: true
+                - name: ledger
+                  mountPath: /secrets/ledger
+                  readOnly: true
+            - name: investigate
+              image: git.example.com/homelab/agent-coder:20260830
+              command: ["sh", "/fleet/scripts/stage.sh", "investigate"]
+              env: &dshenv
+                - name: OPENAI_API_KEY
+                  value: local
+                - name: DSH_PERMISSION_MODE
+                  value: danger-full-access
+                # A per-node package cache (hostPath): an npm install is not 4Gi and ten minutes every run.
+                - { name: npm_config_cache, value: /workspace/cache/npm }
+                - { name: PIP_CACHE_DIR, value: /workspace/cache/pip }
+                - { name: UV_CACHE_DIR, value: /workspace/cache/uv }
+                # The ledger, read-only (role fleet_reader; secret sealed by Chris, optional until then).
+                - { name: LEDGER_DSN_FILE, value: /secrets/ledger-ro/dsn }
+                # The judge, called direct by implement's plan and pre-review (plan.py, precheck.py, 2026-09-15).
+                - { name: JUDGE_URL, value: "http://spark-llamaswap.ai-services.svc.cluster.local:9090/v1" }
+                - { name: JUDGE_MODEL, value: "qwen38" }
+                - { name: JUDGE_MAX_TOKENS, value: "16384" }
+              resources: &dshres
+                requests:
+                  memory: "512Mi"
+                  cpu: "250m"
+                limits:
+                  memory: "8Gi"   # 4Gi killed three runs this week (exit 137), new_localai#66
+                  cpu: "2000m"
+              volumeMounts: &dshmounts
+                - name: config
+                  mountPath: /config
+                  readOnly: true
+                - name: fleet
+                  mountPath: /fleet
+                  readOnly: true
+                - name: workspace
+                  mountPath: /workspace
+                - name: cache
+                  mountPath: /workspace/cache
+                - name: ledger-ro
+                  mountPath: /secrets/ledger-ro
+                  readOnly: true
+            - name: adjudicate
+              image: git.example.com/homelab/agent-coder:20260830
+              command: ["sh", "/fleet/scripts/stage.sh", "adjudicate"]
+              env: *dshenv
+              resources: *dshres
+              volumeMounts: *dshmounts
+            - name: implement
+              image: git.example.com/homelab/agent-coder:20260830
+              command: ["sh", "/fleet/scripts/stage.sh", "implement"]
+              env: *dshenv
+              resources: *dshres
+              volumeMounts: *dshmounts
+            - name: test
+              image: git.example.com/homelab/agent-coder:20260830
+              command: ["sh", "/fleet/scripts/stage.sh", "test"]
+              env: *dshenv
+              resources: *dshres
+              volumeMounts: *dshmounts
+          # Publish: tokens mounted, no model, deterministic.
+          containers:
+            - name: publish
+              image: git.example.com/homelab/agent-coder:20260830
+              command: ["python3", "/fleet/scripts/publish.py"]
+              env:
+                - name: RUN_TRIGGER
+                  value: cron
+                - name: BRAIN_URL
+                  value: http://graphiti-mcp.ai-services.svc.cluster.local:8000/mcp
+                - name: TELEGRAM_CHAT_ID
+                  value: "0"
+              resources:
+                requests:
+                  memory: "128Mi"
+                  cpu: "50m"
+                limits:
+                  memory: "512Mi"
+                  cpu: "500m"
+              volumeMounts:
+                - name: config
+                  mountPath: /config
+                  readOnly: true
+                - name: fleet
+                  mountPath: /fleet
+                  readOnly: true
+                - name: workspace
+                  mountPath: /workspace
+                - name: git-token
+                  mountPath: /secrets/git
+                  readOnly: true
+                - name: telegram
+                  mountPath: /secrets/telegram
+                  readOnly: true
+                - name: brain-token
+                  mountPath: /secrets/brain
+                  readOnly: true
+                - name: ledger
+                  mountPath: /secrets/ledger
+                  readOnly: true
+                - name: github-app
+                  mountPath: /secrets/github-app
+                  readOnly: true
+          volumes:
+            - name: ledger
+              secret:
+                secretName: fleet-ledger-dsn
+                optional: true
+            - name: github-app
+              secret:
+                secretName: github-app
+                # optional: fleet/github.py falls back to the PAT if absent.
+                optional: true
+            - name: config
+              configMap:
+                name: improve-daily
+            - name: git-token
+              secret:
+                secretName: kagent-builder-git-token
+            - name: telegram
+              secret:
+                secretName: kagent-telegram-bot-token
+            - name: brain-token
+              secret:
+                # Reflected from ai-services by reflector (see
+                # graphiti-brain-token-sealed.yaml annotations).
+                # optional: reflection lag must not block the pipeline —
+                # publish.py treats a missing token as brain-write-skip.
+                secretName: graphiti-brain-token
+                optional: true
+            - name: workspace
+              emptyDir: {}
+            - name: fleet
+              emptyDir: {}
+            - name: cache
+              hostPath:
+                path: /var/lib/fleet-cache
+                type: DirectoryOrCreate
+            - name: ledger-ro
+              secret:
+                secretName: fleet-ledger-reader-dsn
+                optional: true
+---
+# Egress: DNS, HTTPS (github + telegram), spark llama-swap, graphiti brain,
+# workbench API (collect stage — failed AgentTasks as evidence).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: improve-daily-egress
+  namespace: kagent-system
+spec:
+  podSelector:
+    matchLabels:
+      app: improve-daily
+  policyTypes:
+    - Egress
+  egress:
+    # The ledger (fleet/ledger.py) on the shared postgres.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: database
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # 443 everywhere except the MetalLB address: GitHub, Telegram and the
+    # registry, but not fleet.example.com, whose LAN page carries the human
+    # steering endpoints. Stage pods talk to the forum on its own port below.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.200/32
+      ports:
+        - protocol: TCP
+          port: 443
+    # The forum, in-cluster and forum-only (console.py FORUM_PORT): ask, say what
+    # you did, stop. Never the LAN page.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: fleet-console
+      ports:
+        - protocol: TCP
+          port: 8081
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.69/32
+      ports:
+        - protocol: TCP
+          port: 9090
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ai-services
+      ports:
+        # NetworkPolicy matches the POD port post-service-NAT: the
+        # graphiti svc is 8000 -> targetPort 8080 (nginx sidecar), so
+        # the rule must allow 8080. (8000 kept for direct-pod calls.)
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8000
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: kagent-workbench
+      ports:
+        - protocol: TCP
+          port: 8080
+    # Research: SearXNG, JSON API. Evidence: Alertmanager (collect.py reads active alerts).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: search
+          podSelector:
+            matchLabels:
+              app: searxng
+      ports:
+        - protocol: TCP
+          port: 8080
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9093
+    # Failing-check logs through the launcher (GET /checks/<owner>/<repo>/<sha>).
+    - to:
+        - podSelector:
+            matchLabels:
+              app: mission-launcher
+      ports:
+        - protocol: TCP
+          port: 8080
+    # Node-level actions, allow-listed and recorded (fleet-node-runner).
+    - to:
+        - podSelector:
+            matchLabels:
+              app: fleet-node-runner
+      ports:
+        - protocol: TCP
+          port: 8080

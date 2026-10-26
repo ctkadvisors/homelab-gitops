@@ -1,0 +1,10 @@
+---
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ai-services
+  labels:
+    name: ai-services
+    app.kubernetes.io/name: ai-services
+    app.kubernetes.io/part-of: local-ai-homelab

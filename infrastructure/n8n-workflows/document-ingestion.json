@@ -1,0 +1,209 @@
+{
+  "name": "Document Ingestion to Qdrant",
+  "active": true,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ingest-document",
+        "responseMode": "onReceived",
+        "responseData": "allEntries",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "webhook-node",
+      "name": "Document Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300],
+      "webhookId": "document-ingestion"
+    },
+    {
+      "parameters": {
+        "operation": "split",
+        "options": {
+          "chunkSize": 1000,
+          "chunkOverlap": 200,
+          "separator": "\n\n"
+        }
+      },
+      "id": "text-splitter-node",
+      "name": "Split Document",
+      "type": "n8n-nodes-base.textSplitter",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "operation": "embeddings",
+        "model": "nomic-embed-text:latest",
+        "baseUrl": "http://ollama.ai-services.svc.cluster.local:11434",
+        "text": "={{ $json.chunk }}"
+      },
+      "id": "embeddings-node",
+      "name": "Generate Embeddings",
+      "type": "n8n-nodes-base.ollama",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "collection": "openwebui_docs",
+        "url": "http://qdrant.vector-db.svc.cluster.local:6333",
+        "points": [
+          {
+            "id": "={{ $json.id || $runIndex }}",
+            "vector": "={{ $json.embedding }}",
+            "payload": {
+              "text": "={{ $json.chunk }}",
+              "source": "={{ $json.source || 'unknown' }}",
+              "timestamp": "={{ new Date().toISOString() }}",
+              "chunk_index": "={{ $runIndex }}"
+            }
+          }
+        ]
+      },
+      "id": "qdrant-node",
+      "name": "Store in Qdrant",
+      "type": "n8n-nodes-base.qdrant",
+      "typeVersion": 1,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": {
+          "status": "success",
+          "message": "Document ingested successfully",
+          "chunks_processed": "={{ $runIndex + 1 }}",
+          "collection": "openwebui_docs"
+        }
+      },
+      "id": "response-node",
+      "name": "Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.error }}",
+              "operation": "isNotEmpty"
+            }
+          ]
+        }
+      },
+      "id": "error-check-node",
+      "name": "Check for Errors",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [850, 500]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": {
+          "status": "error",
+          "message": "Failed to ingest document",
+          "error": "={{ $json.error }}"
+        },
+        "options": {
+          "responseCode": 500
+        }
+      },
+      "id": "error-response-node",
+      "name": "Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1050, 500]
+    }
+  ],
+  "connections": {
+    "Document Webhook": {
+      "main": [
+        [
+          {
+            "node": "Split Document",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Document": {
+      "main": [
+        [
+          {
+            "node": "Generate Embeddings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Embeddings": {
+      "main": [
+        [
+          {
+            "node": "Store in Qdrant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store in Qdrant": {
+      "main": [
+        [
+          {
+            "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ],
+      "error": [
+        [
+          {
+            "node": "Check for Errors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check for Errors": {
+      "main": [
+        [
+          {
+            "node": "Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "id": "rag-pipeline",
+      "name": "RAG Pipeline"
+    },
+    {
+      "id": "document-processing",
+      "name": "Document Processing"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2025-06-07T23:00:00.000Z",
+  "versionId": "1"
+}

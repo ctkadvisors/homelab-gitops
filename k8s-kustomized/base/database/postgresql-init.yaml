@@ -1,0 +1,350 @@
+---
+# PostgreSQL initialization scripts
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgresql-init-scripts
+  namespace: database
+data:
+  01-init.sql: |
+    -- PostgreSQL initialization script
+    -- Creates databases and extensions for all services
+
+    -- Enable required extensions in main database
+    CREATE EXTENSION IF NOT EXISTS vector;
+    CREATE EXTENSION IF NOT EXISTS pg_trgm;
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS pgjwt;
+
+    -- Create databases for services
+    CREATE DATABASE openwebui;
+    CREATE DATABASE openwebui_vector;  -- Separate database for vector storage
+    CREATE DATABASE mcpo;
+    CREATE DATABASE n8n;
+    CREATE DATABASE supabase;  -- For Supabase backend
+    CREATE DATABASE graphiti;
+    CREATE DATABASE platform;  -- For Next.js Platform
+    CREATE DATABASE gitea;     -- For Gitea Git hosting
+    CREATE DATABASE doc_ingester; -- For Doc Ingester service
+
+    -- Create users for each service
+    CREATE USER openwebui WITH PASSWORD 'REDACTED';
+    CREATE USER mcpo WITH PASSWORD 'REDACTED';
+    CREATE USER n8n WITH PASSWORD 'REDACTED';
+    CREATE USER supabase WITH PASSWORD 'REDACTED';
+    CREATE USER dokploy WITH PASSWORD 'REDACTED';
+    CREATE USER graphiti WITH PASSWORD 'REDACTED';
+    CREATE USER platform WITH PASSWORD 'REDACTED';
+    CREATE USER gitea WITH PASSWORD 'REDACTED';
+    CREATE USER doc_ingester WITH PASSWORD 'REDACTED';
+
+    -- Grant database ownership
+    ALTER DATABASE openwebui OWNER TO openwebui;
+    ALTER DATABASE openwebui_vector OWNER TO openwebui;
+    ALTER DATABASE mcpo OWNER TO mcpo;
+    ALTER DATABASE n8n OWNER TO n8n;
+    ALTER DATABASE supabase OWNER TO supabase;
+    ALTER DATABASE dokploy OWNER TO dokploy;
+    ALTER DATABASE graphiti OWNER TO graphiti;
+    ALTER DATABASE platform OWNER TO platform;
+    ALTER DATABASE gitea OWNER TO gitea;
+    ALTER DATABASE doc_ingester OWNER TO doc_ingester;
+
+  02-setup-openwebui.sql: |
+    \c openwebui
+    CREATE EXTENSION IF NOT EXISTS vector;
+    CREATE EXTENSION IF NOT EXISTS pg_trgm;
+    -- Grant schema permissions
+    GRANT ALL ON SCHEMA public TO openwebui;
+    GRANT ALL ON ALL TABLES IN SCHEMA public TO openwebui;
+    GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO openwebui;
+    GRANT ALL ON ALL FUNCTIONS IN SCHEMA public TO openwebui;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO openwebui;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO openwebui;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO openwebui;
+
+    \c openwebui_vector
+    CREATE EXTENSION IF NOT EXISTS vector;
+    -- Grant schema permissions
+    GRANT ALL ON SCHEMA public TO openwebui;
+    GRANT ALL ON ALL TABLES IN SCHEMA public TO openwebui;
+    GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO openwebui;
+    GRANT ALL ON ALL FUNCTIONS IN SCHEMA public TO openwebui;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO openwebui;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO openwebui;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO openwebui;
+
+  03-setup-mcpo.sql: |
+    \c mcpo
+    CREATE EXTENSION IF NOT EXISTS vector;
+    CREATE EXTENSION IF NOT EXISTS pg_trgm;
+    -- Grant schema permissions
+    GRANT ALL ON SCHEMA public TO mcpo;
+    GRANT ALL ON ALL TABLES IN SCHEMA public TO mcpo;
+    GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO mcpo;
+    GRANT ALL ON ALL FUNCTIONS IN SCHEMA public TO mcpo;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO mcpo;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO mcpo;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO mcpo;
+
+  04-setup-n8n.sql: |
+    \c n8n
+    CREATE EXTENSION IF NOT EXISTS vector;
+    CREATE EXTENSION IF NOT EXISTS pg_trgm;
+    -- Grant schema permissions
+    GRANT ALL ON SCHEMA public TO n8n;
+    GRANT ALL ON ALL TABLES IN SCHEMA public TO n8n;
+    GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO n8n;
+    GRANT ALL ON ALL FUNCTIONS IN SCHEMA public TO n8n;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO n8n;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO n8n;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO n8n;
+
+  05-setup-supabase.sql: |
+    \c supabase
+    -- Supabase required extensions
+    CREATE EXTENSION IF NOT EXISTS vector;
+    CREATE EXTENSION IF NOT EXISTS pg_trgm;
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS pgjwt;
+    CREATE EXTENSION IF NOT EXISTS pgcrypto;
+    CREATE EXTENSION IF NOT EXISTS pgsodium;
+
+    -- Create Supabase schemas
+    CREATE SCHEMA IF NOT EXISTS auth;
+    CREATE SCHEMA IF NOT EXISTS storage;
+    CREATE SCHEMA IF NOT EXISTS realtime;
+    CREATE SCHEMA IF NOT EXISTS supabase_functions;
+    CREATE SCHEMA IF NOT EXISTS extensions;
+
+    -- Grant schema permissions
+    GRANT ALL ON SCHEMA public TO supabase;
+    GRANT ALL ON SCHEMA auth TO supabase;
+    GRANT ALL ON SCHEMA storage TO supabase;
+    GRANT ALL ON SCHEMA realtime TO supabase;
+    GRANT ALL ON SCHEMA supabase_functions TO supabase;
+    GRANT ALL ON SCHEMA extensions TO supabase;
+
+    GRANT ALL ON ALL TABLES IN SCHEMA public TO supabase;
+    GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO supabase;
+    GRANT ALL ON ALL FUNCTIONS IN SCHEMA public TO supabase;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO supabase;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO supabase;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO supabase;
+
+    -- Create anon and authenticated roles for Supabase
+    CREATE ROLE anon NOLOGIN;
+    CREATE ROLE authenticated NOLOGIN;
+    CREATE ROLE service_role NOLOGIN;
+
+    -- Grant basic permissions
+    GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
+    GRANT ALL ON SCHEMA public TO service_role;
+
+  06-setup-dokploy.sql: |
+    \c dokploy
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS pg_trgm;
+    -- Grant schema permissions
+    GRANT ALL ON SCHEMA public TO dokploy;
+    GRANT ALL ON ALL TABLES IN SCHEMA public TO dokploy;
+    GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO dokploy;
+    GRANT ALL ON ALL FUNCTIONS IN SCHEMA public TO dokploy;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO dokploy;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO dokploy;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO dokploy;
+
+  07-setup-graphiti.sql: |
+    \c graphiti
+    CREATE EXTENSION IF NOT EXISTS vector;
+    CREATE EXTENSION IF NOT EXISTS pg_trgm;
+    -- Grant schema permissions
+    GRANT ALL ON SCHEMA public TO graphiti;
+    GRANT ALL ON ALL TABLES IN SCHEMA public TO graphiti;
+    GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO graphiti;
+    GRANT ALL ON ALL FUNCTIONS IN SCHEMA public TO graphiti;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO graphiti;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO graphiti;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO graphiti;
+
+  08-setup-platform.sql: |
+    \c platform
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+    -- Grant schema permissions
+    GRANT ALL ON SCHEMA public TO platform;
+    GRANT ALL ON ALL TABLES IN SCHEMA public TO platform;
+    GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO platform;
+    GRANT ALL ON ALL FUNCTIONS IN SCHEMA public TO platform;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO platform;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO platform;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO platform;
+
+  09-setup-gitea.sql: |
+    \c gitea
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS pg_trgm;
+    -- Grant schema permissions
+    GRANT ALL ON SCHEMA public TO gitea;
+    GRANT ALL ON ALL TABLES IN SCHEMA public TO gitea;
+    GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO gitea;
+    GRANT ALL ON ALL FUNCTIONS IN SCHEMA public TO gitea;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO gitea;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO gitea;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO gitea;
+
+  10-setup-doc-ingester.sql: |
+    \c doc_ingester
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS pg_trgm;
+    -- Grant schema permissions
+    GRANT ALL ON SCHEMA public TO doc_ingester;
+    GRANT ALL ON ALL TABLES IN SCHEMA public TO doc_ingester;
+    GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO doc_ingester;
+    GRANT ALL ON ALL FUNCTIONS IN SCHEMA public TO doc_ingester;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO doc_ingester;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO doc_ingester;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO doc_ingester;
+
+  11-platform-schema.sql: |
+    \c platform
+
+    -- Users table (simplified)
+    CREATE TABLE users (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        email VARCHAR(255) UNIQUE NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        role VARCHAR(50) NOT NULL DEFAULT 'developer' CHECK (role IN ('admin', 'developer')),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    );
+
+    -- Projects table (Vercel-style: one project = one git repo)
+    CREATE TABLE projects (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        name VARCHAR(50) UNIQUE NOT NULL CHECK (name ~ '^[a-z0-9-]+$'),
+        display_name VARCHAR(100) NOT NULL,
+        description TEXT,
+
+        -- Git configuration
+        repository_url VARCHAR(500) NOT NULL,
+        git_provider VARCHAR(50) NOT NULL CHECK (git_provider IN ('github', 'gitlab', 'bitbucket')),
+        git_branch VARCHAR(100) NOT NULL DEFAULT 'main',
+
+        -- Build configuration
+        framework VARCHAR(50) NOT NULL DEFAULT 'nextjs',
+        build_command VARCHAR(200) NOT NULL DEFAULT 'npm run build',
+        install_command VARCHAR(200) NOT NULL DEFAULT 'npm install',
+        output_directory VARCHAR(100) NOT NULL DEFAULT '.next',
+        root_directory VARCHAR(200), -- For monorepos
+
+        -- Domain configuration
+        production_domain VARCHAR(255), -- Custom domain
+
+        -- Environment variables (JSON)
+        env_vars JSONB NOT NULL DEFAULT '{}',
+
+        -- Settings
+        auto_deploy_enabled BOOLEAN NOT NULL DEFAULT true,
+        preview_deploy_enabled BOOLEAN NOT NULL DEFAULT true,
+
+        -- Status
+        status VARCHAR(50) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'building', 'failed')),
+
+        -- Metadata
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        created_by UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    -- Deployments table (immutable deployments like Vercel)
+    CREATE TABLE deployments (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+
+        -- Git information
+        git_commit_sha VARCHAR(40) NOT NULL,
+        git_commit_message TEXT,
+        git_branch VARCHAR(100) NOT NULL,
+        git_author VARCHAR(255),
+
+        -- Build information
+        build_command VARCHAR(200) NOT NULL,
+        install_command VARCHAR(200) NOT NULL,
+        output_directory VARCHAR(100) NOT NULL,
+
+        -- Deployment metadata
+        url VARCHAR(500) NOT NULL, -- Generated deployment URL
+        is_production BOOLEAN NOT NULL DEFAULT false,
+
+        -- Status and logs
+        status VARCHAR(50) NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'building', 'deploying', 'ready', 'error', 'canceled')),
+        build_logs TEXT,
+        deploy_logs TEXT,
+
+        -- Timing
+        queued_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        build_started_at TIMESTAMP WITH TIME ZONE,
+        build_completed_at TIMESTAMP WITH TIME ZONE,
+        deploy_started_at TIMESTAMP WITH TIME ZONE,
+        deploy_completed_at TIMESTAMP WITH TIME ZONE,
+
+        -- Metadata
+        deployed_by UUID NOT NULL REFERENCES users(id),
+        source VARCHAR(50) NOT NULL DEFAULT 'git' CHECK (source IN ('git', 'manual', 'api')),
+
+        -- Performance metrics
+        build_duration INTEGER, -- seconds
+        deploy_duration INTEGER, -- seconds
+        bundle_size BIGINT -- bytes
+    );
+
+    -- Project collaborators (simplified team model)
+    CREATE TABLE project_collaborators (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        role VARCHAR(50) NOT NULL DEFAULT 'developer' CHECK (role IN ('owner', 'admin', 'developer', 'viewer')),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+
+        UNIQUE(project_id, user_id)
+    );
+
+    -- Indexes for performance
+    CREATE INDEX idx_projects_name ON projects(name);
+    CREATE INDEX idx_projects_created_by ON projects(created_by);
+    CREATE INDEX idx_projects_status ON projects(status);
+
+    CREATE INDEX idx_deployments_project_id ON deployments(project_id);
+    CREATE INDEX idx_deployments_git_branch ON deployments(git_branch);
+    CREATE INDEX idx_deployments_status ON deployments(status);
+    CREATE INDEX idx_deployments_is_production ON deployments(is_production);
+    CREATE INDEX idx_deployments_queued_at ON deployments(queued_at DESC);
+
+    CREATE INDEX idx_collaborators_project_id ON project_collaborators(project_id);
+    CREATE INDEX idx_collaborators_user_id ON project_collaborators(user_id);
+
+    -- Updated at triggers
+    CREATE OR REPLACE FUNCTION update_updated_at_column()
+    RETURNS TRIGGER AS $$
+    BEGIN
+        NEW.updated_at = NOW();
+        RETURN NEW;
+    END;
+    $$ language 'plpgsql';
+
+    CREATE TRIGGER update_projects_updated_at BEFORE UPDATE ON projects
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+    CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON users
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+    -- Sample data for development
+    INSERT INTO users (email, name, role) VALUES
+        ('admin@homelab.local', 'Platform Admin', 'admin'),
+        ('developer@homelab.local', 'Developer User', 'developer');
+
+    -- Grant all permissions to platform user
+    GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO platform;
+    GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO platform;

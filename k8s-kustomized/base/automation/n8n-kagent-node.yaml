@@ -1,0 +1,204 @@
+# n8n-kagent-node — makes the kagent fleet first-class in n8n with ZERO
+# hardcoding (Chris 2026-09-01: "n8n should absorb any new agents").
+# The node's Agent field is a live loadOptions dropdown backed by
+# GET /api/agents on the workbench API: a new Agent CR appears in every
+# workflow's picker with no config change anywhere. The workbench URL
+# comes from the deployment env (declarative config), not from any
+# workflow. Loaded via n8n's ~/.n8n/custom loose-file loader.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: n8n-kagent-node
+  namespace: automation
+  labels:
+    app: n8n
+data:
+  KagentAgent.node.js: |
+    const TERMINAL = ['Completed', 'Failed', 'TimedOut'];
+
+    function baseUrl() {
+      const u = process.env.KAGENT_WORKBENCH_URL;
+      if (!u) {
+        throw new Error(
+          'KAGENT_WORKBENCH_URL is not set on the n8n deployment — ' +
+          'set it declaratively in k8s-kustomized/base/automation/n8n.yaml');
+      }
+      return u.replace(/\/$/, '');
+    }
+
+    class KagentAgent {
+      constructor() {
+        this.description = {
+          displayName: 'Kagent Agent',
+          name: 'kagentAgent',
+          icon: 'fa:robot',
+          group: ['transform'],
+          version: 1,
+          subtitle: '={{ $parameter["agent"] }}',
+          description:
+            'Dispatch a task to a homelab kagent Agent and (optionally) ' +
+            'wait for its result. Agent list is discovered live from the ' +
+            'workbench API — new agents appear automatically.',
+          defaults: { name: 'Kagent Agent' },
+          inputs: ['main'],
+          outputs: ['main'],
+          properties: [
+            {
+              displayName: 'Operation',
+              name: 'operation',
+              type: 'options',
+              options: [
+                { name: 'Run and Wait', value: 'runAndWait',
+                  description: 'Dispatch a task and poll until it finishes' },
+                { name: 'Dispatch Only', value: 'dispatch',
+                  description: 'Fire-and-forget; returns the task handle' },
+                { name: 'Get Task Status', value: 'getStatus',
+                  description: 'Fetch phase/result of an existing task' },
+              ],
+              default: 'runAndWait',
+            },
+            {
+              displayName: 'Agent',
+              name: 'agent',
+              type: 'options',
+              typeOptions: { loadOptionsMethod: 'getAgents' },
+              default: '',
+              required: true,
+              description: 'Live from the workbench API (namespace/name)',
+              displayOptions: { show: { operation: ['runAndWait', 'dispatch'] } },
+            },
+            {
+              displayName: 'Message',
+              name: 'message',
+              type: 'string',
+              typeOptions: { rows: 4 },
+              default: '',
+              required: true,
+              displayOptions: { show: { operation: ['runAndWait', 'dispatch'] } },
+            },
+            {
+              displayName: 'Timeout (Minutes)',
+              name: 'timeoutMinutes',
+              type: 'number',
+              default: 15,
+              displayOptions: { show: { operation: ['runAndWait'] } },
+            },
+            {
+              displayName: 'Poll Interval (Seconds)',
+              name: 'pollSeconds',
+              type: 'number',
+              default: 10,
+              displayOptions: { show: { operation: ['runAndWait'] } },
+            },
+            {
+              displayName: 'Task Namespace',
+              name: 'taskNamespace',
+              type: 'string',
+              default: '',
+              displayOptions: { show: { operation: ['getStatus'] } },
+            },
+            {
+              displayName: 'Task Name',
+              name: 'taskName',
+              type: 'string',
+              default: '',
+              displayOptions: { show: { operation: ['getStatus'] } },
+            },
+          ],
+        };
+
+        this.methods = {
+          loadOptions: {
+            async getAgents() {
+              const res = await this.helpers.httpRequest({
+                method: 'GET',
+                url: baseUrl() + '/api/agents',
+                json: true,
+              });
+              const list = Array.isArray(res) ? res : res.agents || res.items || [];
+              return list
+                .map((a) => ({
+                  name: `${a.name} (${a.namespace}${a.modelClass ? ', ' + a.modelClass : ''})`,
+                  value: `${a.namespace}/${a.name}`,
+                }))
+                .sort((x, y) => x.name.localeCompare(y.name));
+            },
+          },
+        };
+      }
+
+      async execute() {
+        const items = this.getInputData();
+        const out = [];
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+        for (let i = 0; i < items.length; i++) {
+          const operation = this.getNodeParameter('operation', i);
+
+          if (operation === 'getStatus') {
+            const ns = this.getNodeParameter('taskNamespace', i);
+            const name = this.getNodeParameter('taskName', i);
+            const detail = await this.helpers.httpRequest({
+              method: 'GET',
+              url: `${baseUrl()}/api/tasks/${encodeURIComponent(ns)}/${encodeURIComponent(name)}`,
+              json: true,
+            });
+            out.push({ json: detail });
+            continue;
+          }
+
+          const agentRef = this.getNodeParameter('agent', i);
+          const slash = agentRef.indexOf('/');
+          const namespace = agentRef.slice(0, slash);
+          const targetAgent = agentRef.slice(slash + 1);
+          const message = this.getNodeParameter('message', i);
+
+          const created = await this.helpers.httpRequest({
+            method: 'POST',
+            url: baseUrl() + '/api/tasks',
+            body: {
+              targetAgent,
+              namespace,
+              originalUserMessage: message,
+              payload: { text: message },
+            },
+            json: true,
+          });
+
+          if (operation === 'dispatch') {
+            out.push({ json: created });
+            continue;
+          }
+
+          const timeoutMs = this.getNodeParameter('timeoutMinutes', i) * 60000;
+          const pollMs = Math.max(this.getNodeParameter('pollSeconds', i), 5) * 1000;
+          const deadline = Date.now() + timeoutMs;
+          let detail = { phase: 'Pending' };
+          let polls = 0;
+          while (Date.now() < deadline) {
+            await sleep(pollMs);
+            polls += 1;
+            detail = await this.helpers.httpRequest({
+              method: 'GET',
+              url: `${baseUrl()}/api/tasks/${encodeURIComponent(created.namespace)}/${encodeURIComponent(created.name)}`,
+              json: true,
+            });
+            if (TERMINAL.includes(detail.phase)) break;
+          }
+          out.push({
+            json: {
+              agent: targetAgent,
+              namespace: created.namespace,
+              taskName: created.name,
+              phase: TERMINAL.includes(detail.phase) ? detail.phase : 'PollTimeout',
+              result: detail.result === undefined ? null : detail.result,
+              polls,
+            },
+          });
+        }
+        return [out];
+      }
+    }
+
+    module.exports = { KagentAgent };

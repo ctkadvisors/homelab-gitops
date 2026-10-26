@@ -1,0 +1,21 @@
+# Namespace cleanup manifest for legacy build systems
+# This file defines namespaces that should be removed to clean up legacy build systems
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: fission
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: fission-function
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tekton-pipelines
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shipwright-build

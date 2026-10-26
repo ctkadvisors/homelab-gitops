@@ -1,0 +1,129 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: monitoring
+data:
+  alertmanager.yml: |
+    global:
+      smtp_smarthost: 'localhost:587'
+      smtp_from: 'alertmanager@homelab.local'
+
+    route:
+      group_by: ['alertname', 'namespace']   # one namespace's churn does not resend another's
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      receiver: 'telegram-chris'
+
+    receivers:
+    # Delivers to Chris's DM via the existing kagent Homelab Hermes bot
+    # (@Hlhermbot, token shared from kagent-system via SealedSecret
+    # alertmanager-telegram). parse_mode intentionally empty: MarkdownV2
+    # rejects unescaped chars common in alert text.
+    - name: 'telegram-chris'
+      telegram_configs:
+      - bot_token_file: /etc/alertmanager/telegram/bot-token
+        chat_id: 0
+        api_url: https://api.telegram.org
+        parse_mode: ''
+        send_resolved: true
+
+    inhibit_rules:
+      - source_match:
+          severity: 'critical'
+        target_match:
+          severity: 'warning'
+        equal: ['alertname', 'dev', 'instance']
+
+
+# AlertManager storage will use hostPath volume instead of PVC
+# This is configured in the deployment volumeMounts section
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  namespace: monitoring
+  labels:
+    app: alertmanager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alertmanager
+  template:
+    metadata:
+      labels:
+        app: alertmanager
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9093"
+    spec:
+      nodeSelector:
+        node-type: control-plane
+      containers:
+        - name: alertmanager
+          image: prom/alertmanager:v0.26.0
+          args:
+            - "--config.file=/etc/alertmanager/alertmanager.yml"
+            - "--storage.path=/alertmanager"
+            - "--web.external-url=https://alertmanager.example.com"
+          ports:
+            - containerPort: 9093
+              name: web
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+          volumeMounts:
+            - name: alertmanager-config-volume
+              mountPath: /etc/alertmanager
+            - name: alertmanager-telegram
+              mountPath: /etc/alertmanager/telegram
+              readOnly: true
+            - name: alertmanager-storage-volume
+              mountPath: /alertmanager
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 9093
+            initialDelaySeconds: 30
+            timeoutSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9093
+            initialDelaySeconds: 30
+            timeoutSeconds: 30
+      volumes:
+        - name: alertmanager-config-volume
+          configMap:
+            name: alertmanager-config
+        - name: alertmanager-telegram
+          secret:
+            secretName: alertmanager-telegram
+        - name: alertmanager-storage-volume
+          hostPath:
+            path: /opt/alertmanager-data
+            type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  namespace: monitoring
+  labels:
+    app: alertmanager
+spec:
+  selector:
+    app: alertmanager
+  ports:
+    - name: web
+      port: 9093
+      targetPort: 9093
+  type: ClusterIP

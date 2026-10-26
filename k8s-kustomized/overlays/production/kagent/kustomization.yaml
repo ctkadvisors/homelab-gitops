@@ -1,0 +1,198 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: kagent-production
+  annotations:
+    config.kubernetes.io/local-config: "true"
+    description: "kagent ArgoCD Application for Production"
+
+# Local copy of the kagent Application manifest. The k8s/argocd-apps/
+# version is kept for documentation + manual `kubectl apply` paths,
+# but THIS file is the GitOps-canonical copy — homelab-apps reconciles
+# it through this overlay, picking up every change to main.
+#
+# When you change one, mirror to the other via:
+#   cp k8s-kustomized/overlays/production/kagent/application.yaml \
+#      k8s/argocd-apps/kagent-app.yaml
+# (or vice versa). Two-copy pattern matches the kagent-operator chart's
+# CRD-sync convention — drift-guard is the diff CI check, deferred.
+#
+# kagent-workbench-app.yaml is wired in alongside the operator as of
+# v0.0.6-ws-i. Both Argo Applications reconcile through this overlay;
+# Tailscale subnet routing is the trust boundary (no basicAuth
+# Middleware needed — see workbench-application.yaml header).
+resources:
+  - application.yaml
+  # Gateway external tool providers (remoteMcp brain w/ auth header) — sealed.
+  - external-providers-sealed.yaml
+  # GitHub App identity for publish / pr-reviewer / triage (short-lived tokens).
+  - github-app-sealed.yaml
+  - registry-push-sealed.yaml
+  # brain-auditor Agent + the first KagentSchedule (daily invalidation audit).
+  - brain-auditor.yaml
+  # Autonomous PR review: confidence -> merge/comment/escalate via Telegram.
+  - pr-reviewer.yaml
+  # "Do this for me": concierge -> mission-launcher -> brief/implement/test/publish Job.
+  - mission.yaml
+  - fleet-bench.yaml
+  # Night-shift intake: GitHub issues labeled `mission` become missions (hourly fallback).
+  - triage.yaml
+  # GitHub App webhook receiver: review/triage on events, seconds after they happen.
+  - fleet-hooks.yaml
+  - github-webhook-sealed.yaml
+  # The fleet ledger: Postgres `fleet` db + schema, behind the GitHub-issue queue.
+  - fleet-ledger.yaml
+  # The scheduler: idle-triggered improve runs, one lease, fail-closed signals.
+  - fleet-reconcile.yaml
+  # The console: the ledger and the board on one page, with veto / run / decline / ask.
+  - fleet-console.yaml
+  # Morning digest: concierge -> Telegram + brain (replaces homelab-orchestrator's).
+  - digest.yaml
+  - improve-daily.yaml
+  # What a pipeline stage may see: read-only view of the fleet's namespaces and nodes.
+  - fleet-stage.yaml
+  # The one place the fleet may touch a node, through an allow-list.
+  - fleet-node-runner.yaml
+  # Its SSH identity for the hosts in NODE_HOSTS (sealed 2026-09-07), and the
+  # read-only ledger DSN the stages mount.
+  - fleet-node-runner-ssh-sealed.yaml
+  - fleet-ledger-reader-dsn-sealed.yaml
+  - workbench-application.yaml
+  # kagent Studio — live draft zone for chat-to-create (sync wave 6).
+  # Namespace + RBAC + default-deny NetworkPolicy GitOps-pinned; the
+  # Agents/AgentTemplates inside are created imperatively by workbench-api
+  # and intentionally NOT ArgoCD-managed (no prune of drafts).
+  - draft-namespace.yaml
+  # Mirrors gateway + Langfuse Secrets into kagent-draft because spawned
+  # agent-pods resolve secretKeyRef in their own namespace.
+  - draft-secrets.yaml
+  # Phase 5.x demo Agents (orchestrator + 3 specialists, sync-wave 8)
+  # Operator-facing rich-tool profile for the Workbench Sessions channel.
+  - operator-investigator-agent.yaml
+  # The Telegram front door (memory = graphiti, via the adapter's brain values).
+  - concierge-agent.yaml
+  - specialist-template.yaml
+  # WhatsApp channel gateway/adaptor bootstrap. The Channel starts in
+  # pairing mode so QR pairing can complete before any sender is
+  # allowed to launch AgentTasks.
+  - channel-control.yaml
+  # homelab-builder — SSH + git-push credentials for the shell.exec-
+  # capable child agent operator-investigator can spawn (see
+  # homelab-builder-agent.yaml).
+  - homelab-builder-secrets.yaml
+  # homelab-builder Agent CR + its NetworkPolicy. Spawned exclusively
+  # via operator-investigator's allowedChildAgents/spawn_child_task,
+  # never bound directly to a Channel.
+  - homelab-builder-agent.yaml
+  # Phase 1 / DISP-01..04 — demo AgentDisposition overlays for the
+  # Command Center disposition panel. Three sibling ConfigMaps over
+  # existing Agents (kagent-system/orchestrator, kagent-rc-spectrum/
+  # rc-spectrum-fanout-orchestrator, kagent-system/summarizer-rust)
+  # so the workbench-ui /#/command page renders real disposition rows
+  # immediately after the v0.2.0-disp-rc.1 image bump syncs.
+  # v0.1.5 — LLM gateway bundle. BYO database against the existing
+  # shared postgres in the database namespace (Bitnami sub-chart was
+  # dropped — Bitnami changed dockerhub pricing Aug 2025 and we
+  # already have a working pgvector pod). Sync waves:
+  #   2: kagent-system Namespace + DSN Secrets
+  #   3: bootstrap Job (CREATE DATABASE / USER on existing postgres)
+  #   4: gateway admin token Secret (in llm-gateway-application.yaml)
+  #   5: gateway Argo App (Helm chart in BYO mode)
+  - llm-gateway-db-bootstrap.yaml
+  - llm-gateway-application.yaml
+  # v0.1.7-rig.3 — per-backend API key Secret (Cloudflare today;
+  # extensible to OpenAI/Anthropic/Bedrock/Groq when those
+  # ModelEndpoints land). Sync wave 4, reconciled before the
+  # gateway pod boots so the env vars are present at startup.
+  - llm-gateway-backend-keys-secret.yaml
+  # ModelEndpoint declarations (sync wave 7). Inert until either the
+  # gateway reads them (already does, via K8s informer) or the
+  # operator's admission reconciler reads them (turns on with the
+  # stage-2 flag flip).
+  - model-endpoints.yaml
+  # v0.1.6 — Langfuse credentials Secret. Operator chart's
+  # langfuse.apiKey.secretName references this; spawned agent-pods
+  # use the keys to fetch their systemPromptRef bodies from Langfuse.
+  - llm-langfuse-creds.yaml
+  # OTLP headers Secret — bearer + langfuse ingestion-version. Operator
+  # forwards via agentPod.otlpHeaders.secretName. Spawned agent-pods
+  # use it as OTEL_EXPORTER_OTLP_HEADERS.
+  - llm-langfuse-otlp-headers.yaml
+  # Wave 5 / GA hardening — operator cap-CA Secret consumed by
+  # capabilities.signingSecretName in application.yaml.
+  - cap-ca-secret.yaml
+  # Wave 5 / GA hardening — default Tenant used to stamp
+  # claims.tenant into minted capability bundles.
+  - tenant.yaml
+  # v0.1.7-rig.0 — Enterprise Pilot RC capture rig.
+  #   sync wave 7: rc-pilot Application (Argo App pointing at
+  #     kagent/examples/rc-pilot/; lands Agents + AgentTasks in
+  #     the kagent-rc-pilot namespace).
+  #   sync wave 8: Langfuse `rc-pilot-verifier-jsonshape` v1
+  #     bootstrap Job + NATS audit tap Deployment.
+  #   sync wave 9: workbench evidence collector Job (one-shot;
+  #     `kubectl logs job | tar xv` to pull the pack).
+  # Sync wave 6: mirrors of the kagent-system gateway-token + langfuse
+  # creds + OTLP headers Secrets into the kagent-rc-pilot namespace,
+  # since spawned agent-pods resolve secretKeyRef in their own
+  # namespace and the operator chart only creates these in its
+  # release namespace.
+  # v0.1.9-rc.1+ — RC1 spectrum capture rig. Wave plan:
+  #   sync wave 5: kagent-rc-spectrum Namespace (this overlay
+  #     pre-creates it so wave-6 Secrets have a place to land
+  #     before the rc-spectrum Application syncs at wave 7 — without
+  #     this, the homelab-apps parent deadlocks on "namespaces not
+  #     found").
+  #   sync wave 6: secret mirrors (gateway-token + langfuse creds +
+  #     OTLP headers) into kagent-rc-spectrum.
+  #   sync wave 7: rc-spectrum Argo Application pointing at
+  #     kagent/examples/rc-spectrum/; lands Agents + AgentTasks in
+  #     the already-bootstrapped kagent-rc-spectrum namespace.
+  #   sync wave 9: workbench evidence collector Job (one-shot;
+  #     `kubectl logs job | tar xv` to pull the pack).
+
+# Every fleet image is linux/amd64 (root CLAUDE.md, Building images). On
+# 2026-09-05 the retired k3s-reconciler VM (arm64, Multipass on Mini-3) came
+# back after a power loss and rejoined the cluster; every pr-reviewer,
+# fleet-reconcile and brain-scribe pod landed on it and died with "exec format
+# error" for five hours. Pin the fleet to the architecture it is built for so a
+# stray node costs nothing. Strategic merge, so existing selectors (node-type)
+# are kept.
+patches:
+  - target:
+      kind: CronJob
+    patch: |-
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: any
+      spec:
+        jobTemplate:
+          spec:
+            template:
+              spec:
+                nodeSelector:
+                  kubernetes.io/arch: amd64
+  - target:
+      kind: Deployment
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: any
+      spec:
+        template:
+          spec:
+            nodeSelector:
+              kubernetes.io/arch: amd64
+
+labels:
+  - pairs:
+      environment: production
+      deployment: homelab-prod
+      component: kagent
+
+commonAnnotations:
+  deployment.kubernetes.io/environment: "production"

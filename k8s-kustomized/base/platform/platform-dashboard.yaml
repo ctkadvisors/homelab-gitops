@@ -1,0 +1,153 @@
+# Platform Dashboard Deployment
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: platform-dashboard
+  namespace: platform
+  labels:
+    app: platform-dashboard
+    app.kubernetes.io/name: platform-dashboard
+    app.kubernetes.io/component: dashboard
+    app.kubernetes.io/part-of: nextjs-platform
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    # ArgoCD Image Updater annotations
+    argocd-image-updater.argoproj.io/image-list: "platform-dashboard=git.example.com/homelab/platform-dashboard"
+    argocd-image-updater.argoproj.io/platform-dashboard.update-strategy: "semver"
+    argocd-image-updater.argoproj.io/platform-dashboard.allow-tags: "regexp:^main-[a-f0-9]{7}$"
+    argocd-image-updater.argoproj.io/platform-dashboard.force-update: "true"
+    argocd-image-updater.argoproj.io/platform-dashboard.pull-secret: "secret:argocd/gitea-registry-secret"
+    argocd-image-updater.argoproj.io/write-back-method: "git"
+    argocd-image-updater.argoproj.io/git-branch: "main"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: platform-dashboard
+  template:
+    metadata:
+      labels:
+        app: platform-dashboard
+        app.kubernetes.io/name: platform-dashboard
+        app.kubernetes.io/component: dashboard
+    spec:
+      imagePullSecrets:
+        - name: gitea-registry-secret
+      nodeSelector:
+        high-memory: "true" # Deploy on EliteMini2 (high-memory)
+      containers:
+        - name: dashboard
+          image: git.example.com/homelab/platform-dashboard:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+              name: http
+              protocol: TCP
+          env:
+            # Platform API connection (through ingress)
+            - name: PLATFORM_API_URL
+              value: "https://platform.example.com"
+            - name: NEXT_PUBLIC_PLATFORM_API_URL
+              value: "https://platform.example.com"
+            - name: NEXT_PUBLIC_PLATFORM_NAME
+              value: "Next.js Platform"
+            - name: NODE_ENV
+              value: "production"
+            # Base domain for generated URLs
+            - name: NEXT_PUBLIC_BASE_DOMAIN
+              value: "example.com"
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 30
+---
+# Platform Dashboard Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: platform-dashboard
+  namespace: platform
+  labels:
+    app: platform-dashboard
+    app.kubernetes.io/name: platform-dashboard
+    app.kubernetes.io/component: dashboard
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  selector:
+    app: platform-dashboard
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+      protocol: TCP
+  type: ClusterIP
+---
+# Platform Ingress - Routes both dashboard and API
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: platform-ingress
+  namespace: platform
+  labels:
+    app.kubernetes.io/name: platform
+    app.kubernetes.io/component: ingress
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+    traefik.ingress.kubernetes.io/router.entrypoints: "websecure"
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - platform.example.com
+      secretName: example-tls # Use wildcard cert from example-tls-platform Certificate
+  rules:
+    - host: platform.example.com
+      http:
+        paths:
+          # API routes
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: platform-api
+                port:
+                  number: 3001
+          # Dashboard (everything else)
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: platform-dashboard
+                port:
+                  number: 3000

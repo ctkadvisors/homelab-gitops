@@ -1,0 +1,97 @@
+# Centralized Network Configuration
+# ===================================
+# This is the SINGLE SOURCE OF TRUTH for all network IPs in the homelab.
+# 
+# When network configuration changes:
+#   1. Update this file with new IPs
+#   2. Run: ./scripts/apply-network-config.sh
+#   3. Apply changes: kubectl apply -k k8s-kustomized/overlays/production
+#   4. Commit changes to git
+#
+# The script will update:
+#   - Kustomize manifests (MetalLB, DNS, ingress, monitoring)
+#   - Ansible inventory
+#   - Documentation (CLAUDE.md, READMEs)
+
+# =============================================================================
+# NODE IPs - Physical/DHCP addresses of cluster nodes
+# =============================================================================
+nodes:
+  elitemini:
+    # DHCP (nmcli ipv4.method auto), holding .76 by lease; verified 2026-09-15.
+    # The 2026-08-12 static pin is no longer in place.
+    ip: "10.0.0.76"
+    mac: "58:47:ca:7e:5b:f1"  # enp2s0 — for WoL (armed via NetworkManager 2026-08-12)
+    role: "control-plane"
+    description: "K3s master, control plane"
+
+  elitemini2:
+    # 2026-09-15: DHCP with a Deco app reservation 58-47-CA-7E-5D-27 -> .58
+    # (nmcli ipv4.method auto, with .58/22 kept as a static fallback address).
+    # The Deco's own "elitemini2" client entry is MAC ...7f:64, the MediaTek
+    # MT7902 Wi-Fi card Linux has no driver for (it joined during Windows
+    # boots); never reserve that one. Reservations are app-only (not the web
+    # UI or local API). k3s-agent runs with --node-ip=10.0.0.58.
+    ip: "10.0.0.58"
+    mac: "58:47:ca:7e:5d:27"  # enp2s0 — for WoL (armed via NetworkManager 2026-08-12)
+    # 2026-09-08: the Deco mistreats .58 specifically. Five minutes of pings to
+    # 1.1.1.1 lost 59% from this node (0% from elitemini, 0% to the gateway,
+    # host idle, NIC counters static); on the same NIC at the same moment a
+    # temporary source .90 lost 0% while .58 lost 87%. Stale client/DHCP
+    # binding for .58 on the Deco (the deleted k3s-reconciler VM or an old
+    # lease). Every "intermittent egress" failure on this node traced to it:
+    # fleet-hooks GitHub timeouts, CI runner npm ETIMEDOUT, wrangler "fetch
+    # failed", artifact-service timeouts.
+    # Resolved 2026-09-15: as a static host with no lease, the Deco blackholed
+    # .58 for 7-27 s at :41 past every minute (130/553 gateway pings lost; LAN
+    # peer elitemini 0/550). With the reservation and a DHCP lease: 360/360.
+    # A static host never renews, so keep ipv4.method auto. The stale
+    # --node-external-ip=10.0.0.66 was removed the same day (.66 is a Mac mini).
+    role: "worker"
+    description: "Additional compute worker (EliteMini, high-memory K3s worker)"
+  
+  jetson1:
+    ip: "10.0.0.73"
+    role: "inference-host"
+    description: "Dedicated Nemotron-3-Nano-4B inference host (out of K3s, 2026-04-18)"
+  
+  jetson2:
+    ip: "10.0.0.75"
+    role: "gpu-worker"
+    description: "GPU worker (Ollama)"
+
+# =============================================================================
+# NETWORK RANGES
+# =============================================================================
+network:
+  # The subnet for the homelab LAN
+  cidr: "10.0.0.0/22"
+  
+  # MetalLB load balancer IP pool
+  metallb_pool_start: "10.0.0.200"
+  metallb_pool_end: "10.0.0.210"
+  
+  # Primary load balancer IP (Traefik ingress)
+  primary_lb_ip: "10.0.0.200"
+  
+  # Secondary load balancer IP (DNS, VPN)
+  secondary_lb_ip: "10.0.0.201"
+
+# =============================================================================
+# K3S CONFIGURATION
+# =============================================================================
+k3s:
+  # API server URL - agents connect to this
+  server_url: "https://10.0.0.76:6443"
+  
+  # Cluster internal CIDRs (usually don't change)
+  cluster_cidr: "10.42.0.0/16"
+  service_cidr: "10.43.0.0/16"
+
+# =============================================================================
+# MONITORING ENDPOINTS
+# =============================================================================
+monitoring:
+  # Jetson metrics exporter ports
+  jetson1_metrics: "10.0.0.73:9101"
+  jetson2_metrics: "10.0.0.75:9101"

@@ -1,0 +1,62 @@
+# cloudflared — the one inbound path from the internet to the cluster.
+#
+# *.example.com resolves publicly to 10.0.0.200 (MetalLB), so nothing
+# here was reachable from outside; GitHub could not deliver webhooks to
+# fleet-hooks. This is the pre-existing Cloudflare tunnel `example`
+# (49c4b963-cf12-46f2-b695-365abb1b2c71, created for WARP routing, never
+# had a connector). Its config is remote (dashboard/API), currently ONE
+# public hostname: fleet-hooks.example.com -> https://traefik-loadbalancer
+# :443 (noTLSVerify, originServerName set; Traefik's :80 `web` entrypoint
+# answers 404 for Ingress routes here, :443 works), everything else
+# http_status:404. Adding a hostname = a tunnel ingress
+# rule + a proxied CNAME <host> -> <tunnel-id>.cfargotunnel.com; nothing
+# in this file changes. Token sealed in cloudflared-token-sealed.yaml
+# (fetched via the API with wrangler's OAuth token; rotate from Zero
+# Trust -> Networks -> Tunnels).
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared
+  namespace: ingress-system
+  labels:
+    app: cloudflared
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cloudflared
+  template:
+    metadata:
+      labels:
+        app: cloudflared
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: cloudflared
+          image: cloudflare/cloudflared:2025.8.1
+          args: ["tunnel", "--no-autoupdate", "--metrics", "0.0.0.0:2000", "run"]
+          env:
+            - name: TUNNEL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: cloudflared-token
+                  key: token
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: 2000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true

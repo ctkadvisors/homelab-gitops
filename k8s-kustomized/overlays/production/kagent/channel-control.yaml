@@ -1,0 +1,126 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Chris Knuteson
+#
+# Channel control-plane bootstrap for external messaging adapters.
+#
+# Secret posture matches the existing kagent homelab Secrets:
+# plaintext-in-git is acceptable for this single-user, Tailscale-bound
+# cluster. Rotate with:
+#   openssl rand -hex 24
+---
+
+apiVersion: kagent.example.com/v1alpha1
+kind: Channel
+metadata:
+  name: whatsapp-work
+  namespace: kagent-system
+  labels:
+    app.kubernetes.io/name: kagent-channel-gateway
+    kagent.example.com/provider: whatsapp
+  annotations:
+    # Wave 7: after the kagent child Application has installed CRDs.
+    argocd.argoproj.io/sync-wave: '7'
+spec:
+  provider: whatsapp
+  accountId: work
+  displayName: WhatsApp Work
+  sessionStorage:
+    pvc:
+      claimName: kagent-kagent-operator-channel-whatsapp-auth
+  policy:
+    # Pairing mode lets the adapter publish QR/paired state while
+    # denying DMs until the real sender JID is intentionally allowlisted.
+    dmPolicy: pairing
+    groupPolicy: disabled
+  whatsapp:
+    authDir: /var/lib/kagent/whatsapp-auth
+    sendReadReceipts: false
+    mediaMaxMb: 0
+---
+
+apiVersion: kagent.example.com/v1alpha1
+kind: Channel
+metadata:
+  name: telegram-work
+  namespace: kagent-system
+  labels:
+    app.kubernetes.io/name: kagent-channel-gateway
+    kagent.example.com/provider: telegram
+  annotations:
+    # Wave 7: after the kagent child Application has installed CRDs.
+    argocd.argoproj.io/sync-wave: '7'
+spec:
+  provider: telegram
+  accountId: work
+  displayName: Telegram Work
+  authSecretRef:
+    name: kagent-telegram-bot-token
+    key: token
+  policy:
+    # First contact from Chris K recorded via pairing mode in
+    # status.lastDeniedInbound (sender.id "0", 2026-07-03).
+    # Promoted straight to allowlist for that one sender id — DMs
+    # from anyone else are still denied.
+    dmPolicy: allowlist
+    allowFrom:
+      - '0'
+    groupPolicy: disabled
+---
+
+apiVersion: kagent.example.com/v1alpha1
+kind: ChannelBinding
+metadata:
+  name: whatsapp-work-operator-investigator
+  namespace: kagent-system
+  labels:
+    app.kubernetes.io/name: kagent-channel-gateway
+    kagent.example.com/provider: whatsapp
+  annotations:
+    # Wave 9: after GitOps-managed target Agents land in wave 8.
+    argocd.argoproj.io/sync-wave: '9'
+spec:
+  channelRef:
+    name: whatsapp-work
+  default: true
+  target:
+    # 2026-09-02: same front door as Telegram. (The WhatsApp adapter has
+    # no brain write/bridge yet — that lives in the telegram adapter.)
+    agentRef:
+      name: concierge
+    # timeoutSeconds bumped from 600 to 1500 (2026-07-07): a spawned
+    # homelab-builder child's own timeout clamps to whatever remains of
+    # this parent budget (see builtin-tools-spawn.ts), so 600s left no
+    # real room for a build+push+deploy task.
+    runConfig:
+      maxIterations: 6
+      timeoutSeconds: 1500
+---
+
+apiVersion: kagent.example.com/v1alpha1
+kind: ChannelBinding
+metadata:
+  # 2026-09-02: Telegram now lands on the concierge (concierge-agent.yaml);
+  # operator-investigator is one of its children. WhatsApp unchanged.
+  name: telegram-work-concierge
+  namespace: kagent-system
+  labels:
+    app.kubernetes.io/name: kagent-channel-gateway
+    kagent.example.com/provider: telegram
+  annotations:
+    # Wave 9: after GitOps-managed target Agents land in wave 8.
+    argocd.argoproj.io/sync-wave: '9'
+spec:
+  channelRef:
+    name: telegram-work
+  default: true
+  target:
+    agentRef:
+      name: concierge
+    # A spawned child's timeout clamps to whatever remains of this parent
+    # budget (see builtin-tools-spawn.ts), so keep room for a build.
+    runConfig:
+      # Chris, 2026-09-08 03:03Z on Telegram: "Raise the cap." 9 of 73
+      # concierge tasks had died at maxIterations mid-answer (multi-tool
+      # research: search + browser + memory + code interpreter).
+      maxIterations: 20
+      timeoutSeconds: 1500

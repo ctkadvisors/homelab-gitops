@@ -1,0 +1,32 @@
+apiVersion: kagent.example.com/v1alpha1
+kind: Tenant
+metadata:
+  name: homelab
+  labels:
+    app.kubernetes.io/name: kagent-tenant-homelab
+    app.kubernetes.io/part-of: kagent
+  annotations:
+    # Tenant CRD is installed by the operator Helm Application in
+    # sync wave 6. Apply this after that Application exists and before
+    # demo Agents/Tasks in wave 8.
+    argocd.argoproj.io/sync-wave: '7'
+    # Wave 6's Application CR is created instantly, but the underlying
+    # operator chart (which installs the Tenant CRD) syncs asynchronously
+    # against its own targetRevision. By the time wave 7 evaluates, the
+    # Tenant CRD may not exist yet. SkipDryRunOnMissingResource=true
+    # lets Argo skip the pre-apply schema check; combined with Argo's
+    # retry loop, the Tenant CR lands once the CRD has been installed.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+spec:
+  name: homelab
+  namespaceAllowlist:
+    - kagent-system
+    # kagent Studio draft zone — lets the operator reconcile + spawn
+    # agent-pods for AgentTemplates the Architect instantiates here, so
+    # "Try it" agents actually run (and export OTel to Langfuse). Egress
+    # is still locked by the kagent-draft NetworkPolicies (DNS + gateway
+    # + langfuse only).
+    - kagent-draft
+  auditSubject: tenant/homelab
+  capabilityRoot:
+    issuer: kagent.example.com/operator/tenant/homelab

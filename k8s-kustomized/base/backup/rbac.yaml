@@ -1,0 +1,61 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nas-backup
+  namespace: backup
+---
+# Read-only access to the sealed-secrets master key so it can be shipped
+# off-box. Without an off-cluster copy of this key, every SealedSecret is
+# unrecoverable after a cluster loss.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: read-sealing-key
+  namespace: sealed-secrets
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nas-backup-read-sealing-key
+  namespace: sealed-secrets
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: read-sealing-key
+subjects:
+  - kind: ServiceAccount
+    name: nas-backup
+    namespace: backup
+---
+# pg_dumpall of the shared postgres from inside the backup job.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: exec-postgres
+  namespace: database
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nas-backup-exec-postgres
+  namespace: database
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: exec-postgres
+subjects:
+  - kind: ServiceAccount
+    name: nas-backup
+    namespace: backup

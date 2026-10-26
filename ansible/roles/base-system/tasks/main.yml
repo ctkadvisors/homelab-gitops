@@ -1,0 +1,224 @@
+---
+# Main tasks for base-system role
+
+- name: Include OS-specific variables
+  include_vars: "{{ ansible_os_family }}.yml"
+  tags: always
+
+- name: Gather system facts
+  setup:
+    gather_subset:
+      - "!all"
+      - "!min"
+      - "network"
+      - "hardware"
+      - "virtual"
+  tags: always
+
+- name: Display system information
+  debug:
+    msg:
+      - "Configuring {{ inventory_hostname }}"
+      - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+      - "Architecture: {{ ansible_architecture }}"
+      - "Memory: {{ ansible_memtotal_mb }}MB"
+      - "CPU cores: {{ ansible_processor_vcpus }}"
+  tags: always
+
+# Package Management
+- name: Update package cache
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+  when: base_system.update_cache
+  tags: packages
+
+- name: Upgrade all packages
+  apt:
+    upgrade: dist
+    autoremove: yes
+    autoclean: yes
+  when: base_system.upgrade_packages
+  register: package_upgrade_result
+  tags: packages
+
+- name: Install essential packages
+  apt:
+    name: "{{ base_system.packages + base_system.additional_packages }}"
+    state: present
+    update_cache: yes
+  tags: packages
+
+- name: Remove unnecessary packages
+  apt:
+    name: "{{ security_hardening.remove_packages }}"
+    state: absent
+    purge: yes
+  when: security_hardening.enabled
+  tags: packages
+
+# System Configuration
+- name: Set timezone
+  timezone:
+    name: "{{ base_system.timezone }}"
+  notify: restart chrony
+  tags: system
+
+- name: Set locale
+  locale_gen:
+    name: "{{ base_system.locale }}"
+    state: present
+  tags: system
+
+- name: Create required directories
+  file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop: "{{ directories.create }}"
+  tags: system
+
+# User Configuration
+- name: Ensure user is in sudo group
+  user:
+    name: "{{ base_system.user }}"
+    groups: "sudo"
+    append: yes
+  tags: users
+
+- name: Set up SSH key for user
+  authorized_key:
+    user: "{{ base_system.user }}"
+    state: present
+    key: "{{ lookup('file', '~/.ssh/id_ed25519.pub') }}"
+  tags: users
+
+# SSH Configuration
+- name: Configure SSH daemon
+  template:
+    src: sshd_config.j2
+    dest: /etc/ssh/sshd_config
+    owner: root
+    group: root
+    mode: "0600"
+    backup: yes
+  notify: restart ssh
+  when: ssh_config.enabled
+  tags: ssh
+
+# Performance Tuning
+- name: Configure sysctl parameters
+  sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: yes
+  loop: "{{ performance_tuning.sysctl_params | dict2items }}"
+  when: performance_tuning.enabled
+  tags: performance
+
+- name: Disable swap
+  shell: swapoff -a
+  when: not performance_tuning.swap.enabled
+  tags: performance
+
+- name: Remove swap from fstab
+  lineinfile:
+    path: /etc/fstab
+    regexp: "^.*swap.*$"
+    state: absent
+  when: not performance_tuning.swap.enabled
+  tags: performance
+
+# Service Management
+- name: Enable required services
+  systemd:
+    name: "{{ item }}"
+    enabled: yes
+    state: started
+  loop: "{{ system_services.enabled }}"
+  tags: services
+
+- name: Disable unnecessary services
+  systemd:
+    name: "{{ item }}"
+    enabled: no
+    state: stopped
+  loop: "{{ system_services.disabled }}"
+  ignore_errors: yes
+  tags: services
+
+# Log Management
+- name: Configure journald
+  template:
+    src: journald.conf.j2
+    dest: /etc/systemd/journald.conf
+    owner: root
+    group: root
+    mode: "0644"
+    backup: yes
+  notify: restart journald
+  when: log_management.enabled
+  tags: logging
+
+- name: Configure logrotate
+  template:
+    src: logrotate.j2
+    dest: "/etc/logrotate.d/{{ item.name }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ log_management.logrotate.configs }}"
+  when: log_management.enabled and log_management.logrotate.enabled
+  tags: logging
+
+# Cron Jobs
+- name: Set up cron jobs
+  cron:
+    name: "{{ item.name }}"
+    job: "{{ item.job }}"
+    minute: "{{ item.minute }}"
+    hour: "{{ item.hour }}"
+    day: "{{ item.day }}"
+    month: "{{ item.month }}"
+    weekday: "{{ item.weekday }}"
+    user: "{{ item.user }}"
+  loop: "{{ cron_jobs }}"
+  tags: cron
+
+# Security Hardening
+- name: Set secure file permissions
+  file:
+    path: "{{ item.path }}"
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop: "{{ security_hardening.secure_files }}"
+  when: security_hardening.enabled
+  tags: security
+
+# Firewall Configuration (if enabled)
+- name: Configure UFW firewall
+  include_tasks: firewall.yml
+  when: firewall_config.enabled
+  tags: firewall
+
+# System Information
+- name: Create system info file
+  template:
+    src: system-info.j2
+    dest: /etc/ansible/system-info
+    owner: root
+    group: root
+    mode: "0644"
+  tags: system
+
+- name: Display completion message
+  debug:
+    msg:
+      - "Base system configuration completed for {{ inventory_hostname }}"
+      - "Reboot may be required if kernel parameters were changed"
+      - "Check /etc/ansible/system-info for system details"
+  tags: always

@@ -1,0 +1,201 @@
+# fleet-hooks — the GitHub App's webhook receiver (services/fleet-scripts/
+# scripts/hooks.py). Chris, 2026-09-03: "flip to a subscription". GitHub
+# pushes pull_request / check_suite / workflow_run / issues events here;
+# the receiver runs review.py or triage.py for just that repo, seconds
+# later, instead of the CronJobs polling every 15 and 30 minutes (those
+# are now hourly fallbacks). Same image pair as pr-reviewer: agent-coder
+# for dsh (the judge), fleet-scripts copied in by the init container.
+#
+# The App's webhook URL + secret are set by the pod itself at start-up
+# (WEBHOOK_URL, PATCH /app/hook/config); the only manual step is ticking
+# the event subscriptions on the App's "Permissions & events" page.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fleet-hooks
+  namespace: kagent-system
+  labels:
+    app: fleet-hooks
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # one receiver, one webhook registration
+  selector:
+    matchLabels:
+      app: fleet-hooks
+  template:
+    metadata:
+      labels:
+        app: fleet-hooks
+    spec:
+      enableServiceLinks: false
+      nodeSelector:
+        node-type: compute-worker
+      initContainers:
+        - name: scripts
+          image: git.example.com/homelab/fleet-scripts:20260916-366f92e
+          command: ["sh", "-c", "cp -r /app/. /fleet/"]
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { cpu: 200m, memory: 128Mi }
+          volumeMounts:
+            - { name: fleet, mountPath: /fleet }
+      containers:
+        - name: hooks
+          image: git.example.com/homelab/agent-coder:20260830
+          command: ["python3", "/fleet/scripts/hooks.py"]
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - { name: WEBHOOK_URL, value: "https://fleet-hooks.example.com/hooks" }
+            - { name: OPENAI_API_KEY, value: local }
+            - { name: TELEGRAM_CHAT_ID, value: "0" }
+            - { name: TRUSTED, value: "chrisknu,example-fleet[bot]" }
+            - { name: DEBOUNCE_SECONDS, value: "20" }
+            # The judge, same as pr-reviewer (review.ask_judge). Without it review.judge fell
+            # back to dsh with a /config patch this pod does not have, answered '' in 8 s, and
+            # every webhook review was "unparseable" - only the hourly CronJob ever judged (2026-09-15).
+            - { name: JUDGE_URL, value: "http://spark-llamaswap.ai-services.svc.cluster.local:9090/v1" }
+            - { name: JUDGE_MODEL, value: "qwen38" }
+            - { name: JUDGE_MAX_TOKENS, value: "16384" }
+            - { name: JUDGE_DIFF_CHARS, value: "120000" }
+            # push events become brain episodes (fleet/brain.py); token is the
+            # graphiti-brain-token reflected into kagent-system.
+            - { name: BRAIN_URL, value: "http://graphiti-mcp.ai-services.svc.cluster.local:8000/mcp" }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 50m, memory: 256Mi }
+            limits: { cpu: "1", memory: 1Gi }
+          volumeMounts:
+            - { name: config, mountPath: /config, readOnly: true }
+            - { name: fleet, mountPath: /fleet, readOnly: true }
+            - { name: git-token, mountPath: /secrets/git, readOnly: true }
+            - { name: telegram, mountPath: /secrets/telegram, readOnly: true }
+            - { name: github-app, mountPath: /secrets/github-app, readOnly: true }
+            - { name: webhook, mountPath: /secrets/webhook, readOnly: true }
+            - { name: brain, mountPath: /secrets/brain, readOnly: true }
+            - { name: ledger, mountPath: /secrets/ledger, readOnly: true }
+      volumes:
+        - name: fleet
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: pr-reviewer # the dsh patch the judge uses
+        - name: git-token
+          secret:
+            secretName: kagent-builder-git-token
+        - name: telegram
+          secret:
+            secretName: kagent-telegram-bot-token
+        - name: github-app
+          secret:
+            secretName: github-app
+        - name: webhook
+          secret:
+            secretName: github-webhook
+        - name: brain
+          secret:
+            secretName: graphiti-brain-token
+        - name: ledger
+          secret:
+            secretName: fleet-ledger-dsn
+            optional: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fleet-hooks
+  namespace: kagent-system
+  labels:
+    app: fleet-hooks
+spec:
+  selector:
+    app: fleet-hooks
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: fleet-hooks
+  namespace: kagent-system
+  annotations:
+    # web too: the tunnel terminates TLS at Cloudflare and hands Traefik
+    # plain HTTP on :80. websecure alone answered the tunnel with a 404.
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+    traefik.ingress.kubernetes.io/router.tls: 'true'
+spec:
+  # Three IngressClasses exist here (contour, kong, traefik) and contour is
+  # the default: without this the object lands on contour and Traefik 404s.
+  ingressClassName: traefik
+  rules:
+    - host: fleet-hooks.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: fleet-hooks
+                port:
+                  name: http
+---
+# Traefik in, GitHub/spark/launcher out. Same egress shape as pr-reviewer
+# plus the in-namespace mission-launcher for triage.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fleet-hooks
+  namespace: kagent-system
+spec:
+  podSelector:
+    matchLabels:
+      app: fleet-hooks
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - { protocol: TCP, port: 8080 }
+  egress:
+    - to: []
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to: []
+      ports:
+        - { protocol: TCP, port: 443 }
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.69/32
+      ports:
+        - { protocol: TCP, port: 9090 }
+    - to:
+        - podSelector:
+            matchLabels:
+              app: mission-launcher
+      ports:
+        - { protocol: TCP, port: 8080 }
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ai-services
+      ports:
+        - { protocol: TCP, port: 8000 }
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: database
+      ports:
+        - { protocol: TCP, port: 5432 }

@@ -1,0 +1,54 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: platform-builds
+  name: buildkit-builder
+  labels:
+    app.kubernetes.io/name: buildkit
+    app.kubernetes.io/component: rbac
+rules:
+# Jobs management - core BuildKit functionality
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Pods management - needed for BuildKit job execution
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Pod logs access - for build monitoring and debugging
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get", "list"]
+# Secrets access - for registry authentication
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list"]
+# ConfigMaps - for BuildKit configuration
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# PersistentVolumeClaims - for build cache and workspace
+- apiGroups: [""]
+  resources: ["persistentvolumeclaims"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Events - for build status reporting
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: buildkit-build-sa-binding
+  namespace: platform-builds
+  labels:
+    app.kubernetes.io/name: buildkit
+    app.kubernetes.io/component: rbac
+subjects:
+- kind: ServiceAccount
+  name: buildkit-build-sa
+  namespace: platform-builds
+roleRef:
+  kind: Role
+  name: buildkit-builder
+  apiGroup: rbac.authorization.k8s.io

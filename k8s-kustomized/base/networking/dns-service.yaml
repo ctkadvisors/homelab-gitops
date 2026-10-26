@@ -1,0 +1,127 @@
+---
+# DNS Service for .homelab domains
+# Runs dnsmasq in cluster to handle DNS on MetalLB IP
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: homelab-dns
+  namespace: kube-system
+  labels:
+    app: homelab-dns
+    app.kubernetes.io/name: homelab-dns
+    app.kubernetes.io/component: dns-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: homelab-dns
+  template:
+    metadata:
+      labels:
+        app: homelab-dns
+    spec:
+      nodeSelector:
+        node-type: worker # Run on RPi for lightweight DNS
+      containers:
+        - name: dnsmasq
+          image: andyshinn/dnsmasq:2.85
+          args:
+            - --keep-in-foreground
+            - --log-queries
+            - --no-resolv
+            - --server=8.8.8.8
+            - --server=1.1.1.1
+            - --cache-size=1000
+            - --neg-ttl=60
+            - --local-ttl=300
+            # .homelab domain mappings to MetalLB IP
+            - --address=/chat.homelab/10.0.0.200
+            - --address=/n8n.homelab/10.0.0.200
+            - --address=/mcpo.homelab/10.0.0.200
+            - --address=/mcpo-ui.homelab/10.0.0.200
+            - --address=/dashboard.homelab/10.0.0.200
+            - --address=/home.homelab/10.0.0.200
+            - --address=/platform.homelab/10.0.0.200
+            - --address=/argocd.homelab/10.0.0.200
+            - --address=/argo.homelab/10.0.0.200
+            - --address=/traefik.homelab/10.0.0.200
+            - --address=/qdrant.homelab/10.0.0.200
+            - --address=/studio.homelab/10.0.0.200
+            - --address=/auth.homelab/10.0.0.200
+            - --address=/api.homelab/10.0.0.200
+            - --address=/prometheus.homelab/10.0.0.200
+            - --address=/grafana.homelab/10.0.0.200
+            - --address=/alertmanager.homelab/10.0.0.200
+          ports:
+            - containerPort: 53
+              name: dns-udp
+              protocol: UDP
+            - containerPort: 53
+              name: dns-tcp
+              protocol: TCP
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "200m"
+          securityContext:
+            capabilities:
+              add:
+                - NET_BIND_SERVICE
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: false
+            runAsUser: 0
+---
+# DNS Service - LoadBalancer to expose on MetalLB IP
+apiVersion: v1
+kind: Service
+metadata:
+  name: homelab-dns-lb
+  namespace: kube-system
+  labels:
+    app: homelab-dns
+    app.kubernetes.io/name: homelab-dns
+  annotations:
+    metallb.universe.tf/loadBalancerIPs: 10.0.0.201
+spec:
+  type: LoadBalancer
+  loadBalancerIP: 10.0.0.201
+  selector:
+    app: homelab-dns
+  ports:
+    - port: 53
+      targetPort: 53
+      protocol: UDP
+      name: dns-udp
+    - port: 53
+      targetPort: 53
+      protocol: TCP
+      name: dns-tcp
+  externalTrafficPolicy: Local
+---
+# ClusterIP service for internal DNS
+apiVersion: v1
+kind: Service
+metadata:
+  name: homelab-dns
+  namespace: kube-system
+  labels:
+    app: homelab-dns
+    app.kubernetes.io/name: homelab-dns
+spec:
+  selector:
+    app: homelab-dns
+  ports:
+    - port: 53
+      targetPort: 53
+      protocol: UDP
+      name: dns-udp
+    - port: 53
+      targetPort: 53
+      protocol: TCP
+      name: dns-tcp
+  type: ClusterIP

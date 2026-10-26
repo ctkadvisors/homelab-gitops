@@ -1,0 +1,180 @@
+# Platform API Deployment
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: platform-api
+  namespace: platform
+  labels:
+    app: platform-api
+    app.kubernetes.io/name: platform-api
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: nextjs-platform
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    # ArgoCD Image Updater annotations
+    argocd-image-updater.argoproj.io/image-list: "platform-api=git.example.com/homelab/platform-api"
+    argocd-image-updater.argoproj.io/platform-api.update-strategy: "semver"
+    argocd-image-updater.argoproj.io/platform-api.allow-tags: "regexp:^main-[a-f0-9]{7}$"
+    argocd-image-updater.argoproj.io/platform-api.force-update: "true"
+    argocd-image-updater.argoproj.io/platform-api.pull-secret: "secret:argocd/gitea-registry-secret"
+    argocd-image-updater.argoproj.io/write-back-method: "git"
+    argocd-image-updater.argoproj.io/git-branch: "main"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: platform-api
+  template:
+    metadata:
+      labels:
+        app: platform-api
+        app.kubernetes.io/name: platform-api
+        app.kubernetes.io/component: api
+    spec:
+      serviceAccountName: platform-api
+      imagePullSecrets:
+        - name: gitea-registry-secret
+      nodeSelector:
+        high-memory: "true" # Deploy on EliteMini2 (high-memory)
+      containers:
+        - name: api
+          image: git.example.com/homelab/platform-api:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3001
+              name: http
+              protocol: TCP
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: PORT
+              value: "3001"
+            # Database configuration
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: platform-api-secrets
+                  key: DB_HOST
+            - name: DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: platform-api-secrets
+                  key: DB_PORT
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: platform-api-secrets
+                  key: DB_NAME
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: platform-api-secrets
+                  key: DB_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: platform-api-secrets
+                  key: DB_PASSWORD
+            # Authentication
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: platform-api-secrets
+                  key: JWT_SECRET
+            - name: CORS_ORIGIN
+              valueFrom:
+                secretKeyRef:
+                  name: platform-api-secrets
+                  key: CORS_ORIGIN
+            # Kubernetes API access
+            - name: KUBERNETES_SERVICE_HOST
+              value: "kubernetes.default.svc.cluster.local"
+            - name: KUBERNETES_SERVICE_PORT
+              value: "443"
+            # Platform configuration
+            - name: BASE_DOMAIN
+              value: "example.com"
+            - name: IMAGE_REGISTRY
+              value: "git.example.com"
+            # n8n integration - updated for production webhooks
+            - name: N8N_WEBHOOK_URL
+              value: "https://n8n.example.com/webhook/ai-code-generate"
+            - name: N8N_STATUS_BASE_URL
+              value: "https://n8n.example.com/webhook/job-status"
+            - name: N8N_WEBHOOK_BASE_URL
+              value: "https://n8n.example.com/webhook"
+            - name: PLATFORM_API_BASE_URL
+              value: "https://platform.example.com"
+            - name: AI_WEBHOOK_SECRET
+              value: "REDACTED"
+            # Gitea integration
+            - name: GITEA_URL
+              value: "https://git.example.com"
+            - name: GITEA_TOKEN
+              value: "REDACTED"
+            - name: GITEA_USERNAME
+              value: "homelab"
+            - name: GITEA_ORG
+              value: "ai-generated"
+            # AI Model Provider - using FREE models only for MVP
+            - name: OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: openrouter-api-key
+                  key: api-key
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3001
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/health/ready
+              port: 3001
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: 3001
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 30
+---
+
+# Platform API Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: platform-api
+  namespace: platform
+  labels:
+    app: platform-api
+    app.kubernetes.io/name: platform-api
+    app.kubernetes.io/component: api
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  selector:
+    app: platform-api
+  ports:
+    - name: http
+      port: 3001
+      targetPort: 3001
+      protocol: TCP
+  type: ClusterIP

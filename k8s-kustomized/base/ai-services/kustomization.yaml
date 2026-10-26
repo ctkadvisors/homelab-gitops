@@ -1,0 +1,78 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: ai-services-base
+  annotations:
+    config.kubernetes.io/local-config: "true"
+
+# Resources to include
+resources:
+  - namespace.yaml
+  # - ../storage # NFS storage for shared AI models - DISABLED due to mount failures
+  - localai.yaml
+  - openwebui.yaml
+  - mcpo-control-panel.yaml
+  - codegen-service.yaml
+  - doc-ingester.yaml
+  - model-manager.yaml
+  - ollama-nemotron.yaml
+  - exo-mini2.yaml
+  - spark-llamaswap.yaml
+  - qwen-coder.yaml
+  - graphiti-mcp.yaml
+  - graphiti-neo4j-sealed.yaml
+  - graphiti-brain-token-sealed.yaml
+  - brain-scribe.yaml
+  # hermes-agent.yaml / hermes-tools.yaml retired 2026-09-03: its inference
+  # target was jetson1 (gone) and the concierge is the front door now.
+
+# Common labels applied to all resources
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: local-ai-homelab
+      app.kubernetes.io/managed-by: kustomize
+      environment: production
+
+# Common annotations
+commonAnnotations:
+  config.kubernetes.io/origin: |
+    path: k8s-kustomized/base/ai-services/kustomization.yaml
+
+# Images to use (can be overridden in overlays)
+images:
+  - name: localai/localai
+    newTag: v2.24.1-cublas-cuda12-ffmpeg
+
+# Configuration is handled by individual service manifests
+# to ensure proper namespace assignment
+
+# Resource transformations
+replicas:
+  - name: openwebui
+    count: 1
+
+# Patches for common configurations
+patches:
+  # Add common security context
+  - target:
+      kind: Deployment
+    patch: |-
+      - op: add
+        path: /spec/template/spec/securityContext
+        value:
+          runAsNonRoot: false
+          fsGroup: 1000
+
+  # Add common resource limits
+  - target:
+      kind: Deployment
+      name: ollama
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: "2Gi"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: "6Gi"

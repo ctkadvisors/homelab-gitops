@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+metadata:
+  name: ai-models-storage
+  annotations:
+    config.kubernetes.io/local-config: "true"
+    description: "AI models storage using SMB/CIFS hostPath mounts for Synology NAS"
+
+# Resources for SMB storage
+resources:
+  - smb-csi-driver.yaml
+  - smb-credentials.yaml
+  - smb-storage.yaml
+
+# Common labels for all storage resources
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: homelab-storage
+      storage.kubernetes.io/type: hostpath-smb
+      storage.kubernetes.io/provider: synology

@@ -1,0 +1,22 @@
+# LSP for a dsh stage (2026-09-15, bench-gated by LSP_STAGES in stage.sh). Appended
+# to the stage's patch. The plugins are baked into agent-coder under /opt/dsh-plugins
+# and copied into the profile by stage.sh; the servers are on the image's PATH.
+# (ctx.subprocess, which lsp-stdio launches servers through, is already in dsh's
+# headless tree: inserting it again fails boot with "duplicate loader entry id".)
+- insert:
+    - id: lsp
+      name: '@deepseek-ai/dsh-lsp'
+    - id: lsp-stdio
+      name: '@deepseek-ai/dsh-lsp-stdio'
+      config:
+        servers:
+          typescript:
+            command: typescript-language-server
+            args: ['--stdio']
+            extensionToLanguage: {'.ts': typescript, '.tsx': typescriptreact, '.js': javascript, '.mjs': javascript, '.cjs': javascript}
+          python:
+            command: pyright-langserver
+            args: ['--stdio']
+            extensionToLanguage: {'.py': python}
+    - id: tool-lsp
+      name: '@deepseek-ai/dsh-tool-lsp'

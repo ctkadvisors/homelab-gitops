@@ -1,0 +1,102 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow
+  namespace: ml-registry
+  labels:
+    app: mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlflow
+  template:
+    metadata:
+      labels:
+        app: mlflow
+    spec:
+      containers:
+        - name: mlflow
+          image: ghcr.io/mlflow/mlflow:v3.14.0
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              pip install --no-cache-dir psycopg2-binary boto3 >/dev/null 2>&1
+              exec mlflow server \
+                --host 0.0.0.0 --port 5000 \
+                --backend-store-uri "$BACKEND_STORE_URI" \
+                --artifacts-destination s3://mlflow-artifacts/ \
+                --serve-artifacts \
+                --workers 1 \
+                --allowed-hosts "mlflow.example.com,localhost,127.0.0.1,10.0.0.205,10.0.0.205:5000" \
+                --cors-allowed-origins "https://mlflow.example.com,http://localhost:*,http://127.0.0.1:*"
+          env:
+            - name: BACKEND_STORE_URI
+              valueFrom:
+                secretKeyRef:
+                  name: mlflow-config
+                  key: backend-store-uri
+            # 28GB artifact PUTs die at gunicorn's default worker timeout
+            # (RemoteDisconnected mid-upload, attempts 2-4 on 2026-08-05).
+            - name: GUNICORN_CMD_ARGS
+              value: "--timeout 7200 --graceful-timeout 600"
+            - name: MLFLOW_ENABLE_PROXY_MULTIPART_UPLOAD
+              value: "true"
+            - name: MLFLOW_S3_ENDPOINT_URL
+              value: "http://10.0.0.206:9000"  # minio-direct LB: presigned URLs must work from LAN too
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: mlflow-config
+                  key: aws-access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mlflow-config
+                  key: aws-secret-access-key
+          ports:
+            - containerPort: 5000
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+              httpHeaders:
+                - name: Host
+                  value: localhost
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+              httpHeaders:
+                - name: Host
+                  value: localhost
+            initialDelaySeconds: 120
+            periodSeconds: 20
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              # 2Gi OOMKilled the artifact proxy on multi-GB uploads
+              # (upload attempts 2-5, 2026-08-05) — proxy buffers in RAM.
+              memory: "8Gi"
+              cpu: "2000m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow
+  namespace: ml-registry
+  labels:
+    app: mlflow
+spec:
+  selector:
+    app: mlflow
+  ports:
+    - name: http
+      port: 5000
+      targetPort: 5000

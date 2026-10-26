@@ -1,0 +1,32 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-init-bucket
+  namespace: ml-registry
+spec:
+  backoffLimit: 10
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mc
+          image: minio/mc:latest
+          env:
+            - name: ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: minio-root
+                  key: root-user
+            - name: ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: minio-root
+                  key: root-password
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              until mc alias set local http://minio.ml-registry.svc.cluster.local:9000 "$ROOT_USER" "$ROOT_PASSWORD"; do
+                echo "waiting for minio..."; sleep 3;
+              done
+              mc mb --ignore-existing local/mlflow-artifacts
+              echo "bucket ready"

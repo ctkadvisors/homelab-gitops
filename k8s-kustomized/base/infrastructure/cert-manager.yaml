@@ -1,0 +1,55 @@
+---
+# Note: cert-manager namespace is created by the official manifests
+# ClusterIssuers for Let's Encrypt
+---
+# Let's Encrypt Production ClusterIssuer
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: cluster-issuer
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: admin@example.com # Business email for Let's Encrypt
+    privateKeySecretRef:
+      name: letsencrypt-prod
+    solvers:
+      # HTTP-01 solver for regular domains
+      - http01:
+          ingress:
+            class: traefik
+      # DNS-01 solver for wildcard certificates
+      - dns01:
+          cloudflare:
+            email: admin@example.com
+            apiTokenSecretRef:
+              name: cloudflare-api-token
+              key: api-token
+        selector:
+          # Zone-scoped: any name under example.com uses DNS-01. The old
+          # dnsNames list silently rejected new SANs ("no configured
+          # challenge solvers", 2026-08-05).
+          dnsZones:
+            - "example.com"
+---
+# Let's Encrypt Staging ClusterIssuer (for testing)
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: cluster-issuer
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: admin@example.com # Business email for Let's Encrypt
+    privateKeySecretRef:
+      name: letsencrypt-staging
+    solvers:
+      - http01:
+          ingress:
+            class: traefik

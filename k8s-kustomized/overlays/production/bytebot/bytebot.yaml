@@ -1,0 +1,670 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Chris Knuteson
+#
+# Bytebot — self-hosted AI desktop agent (github.com/bytebot-ai/bytebot).
+# Four components: bytebot-desktop (VNC'd container the agent drives),
+# bytebot-agent (orchestration API, talks to an OpenAI-compatible LLM),
+# bytebot-ui (web frontend), dedicated postgres (bytebot's own schema).
+#
+# LLM wiring: bytebot-agent has NO env var for a plain custom
+# OpenAI-compatible base URL — upstream only supports ANTHROPIC_API_KEY /
+# OPENAI_API_KEY / GEMINI_API_KEY directly, or BYTEBOT_LLM_PROXY_URL
+# pointing at their bundled LiteLLM proxy. We use the smaller path: run
+# upstream's own proxy image (ghcr.io/berriai/litellm, no custom build)
+# with a one-model litellm-config.yaml pointing at kagent-llm-gateway.
+# No cloud API keys anywhere in this file.
+#
+# All pods pinned to elitemini2 (high-memory compute worker) per governance.
+---
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bytebot-postgres-data
+  namespace: ai-services
+  labels:
+    app: bytebot
+    app.kubernetes.io/component: postgres
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  storageClassName: local-path
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bytebot-postgres
+  namespace: ai-services
+  labels:
+    app: bytebot
+    app.kubernetes.io/component: postgres
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # ReadWriteOnce PVC
+  selector:
+    matchLabels:
+      app: bytebot
+      app.kubernetes.io/component: postgres
+  template:
+    metadata:
+      labels:
+        app: bytebot
+        app.kubernetes.io/component: postgres
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: elitemini2
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: postgres
+            - name: POSTGRES_DB
+              value: bytebotdb
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: bytebot-postgres-secret
+                  key: POSTGRES_PASSWORD
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: bytebot-postgres-data
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: bytebot-postgres
+  namespace: ai-services
+  labels:
+    app: bytebot
+    app.kubernetes.io/component: postgres
+spec:
+  type: ClusterIP
+  selector:
+    app: bytebot
+    app.kubernetes.io/component: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bytebot-llm-proxy-config
+  namespace: ai-services
+  labels:
+    app: bytebot
+    app.kubernetes.io/component: llm-proxy
+data:
+  litellm-config.yaml: |
+    model_list:
+      # gemma first: computer use needs VISION — ornith15 is text-only
+      # and can't see the desktop screenshots bytebot sends. Requesting
+      # gemma swaps the spark's big-model slot (evicts ornith15,
+      # multi-minute load) — deliberate tradeoff for vision tasks.
+      - model_name: gemma
+        litellm_params:
+          model: openai/gemma
+          api_base: http://kagent-llm-gateway.kagent-system.svc.cluster.local:4000/v1
+          api_key: os.environ/KAGENT_GATEWAY_TOKEN
+      - model_name: ornith15
+        litellm_params:
+          model: openai/ornith15
+          api_base: http://kagent-llm-gateway.kagent-system.svc.cluster.local:4000/v1
+          api_key: os.environ/KAGENT_GATEWAY_TOKEN
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bytebot-llm-proxy
+  namespace: ai-services
+  labels:
+    app: bytebot
+    app.kubernetes.io/component: llm-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bytebot
+      app.kubernetes.io/component: llm-proxy
+  template:
+    metadata:
+      labels:
+        app: bytebot
+        app.kubernetes.io/component: llm-proxy
+      annotations:
+        checksum/config: bytebot-llm-proxy-config-v1
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: elitemini2
+      containers:
+        - name: litellm
+          image: ghcr.io/berriai/litellm:main-stable
+          args:
+            - "--config"
+            - "/app/config.yaml"
+            - "--port"
+            - "4000"
+          ports:
+            - name: http
+              containerPort: 4000
+          env:
+            - name: KAGENT_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: bytebot-llm-gateway-token
+                  key: token
+          volumeMounts:
+            - name: config
+              mountPath: /app/config.yaml
+              subPath: litellm-config.yaml
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "512Mi"
+            limits:
+              cpu: "500m"
+              # 512Mi OOMKilled the container at startup (2026-08-31, x7) —
+              # litellm's baseline footprint is near 1Gi before any traffic.
+              memory: "1536Mi"
+          # NOT /health — litellm's /health fires a REAL test completion at
+          # every backend model per hit, which had the probes hammering
+          # ornith15 on the spark every ~7s (found 2026-09-01, journal on
+          # spark). /health/liveliness + /health/readiness are process-only.
+          livenessProbe:
+            httpGet:
+              path: /health/liveliness
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health/readiness
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: bytebot-llm-proxy-config
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: bytebot-llm-proxy
+  namespace: ai-services
+  labels:
+    app: bytebot
+    app.kubernetes.io/component: llm-proxy
+spec:
+  type: ClusterIP
+  selector:
+    app: bytebot
+    app.kubernetes.io/component: llm-proxy
+  ports:
+    - name: http
+      port: 4000
+      targetPort: 4000
+---
+
+# bytebot-desktop — the VNC'd container the agent drives. Needs privileged
+# mode + 2Gi /dev/shm per upstream's own compose/helm chart (browsers are
+# shm-hungry). Only pod that needs public web egress — that's its job.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bytebot-desktop
+  namespace: ai-services
+  labels:
+    app: bytebot
+    app.kubernetes.io/component: desktop
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bytebot
+      app.kubernetes.io/component: desktop
+  template:
+    metadata:
+      labels:
+        app: bytebot
+        app.kubernetes.io/component: desktop
+    spec:
+      hostname: computer
+      nodeSelector:
+        kubernetes.io/hostname: elitemini2
+      containers:
+        - name: bytebot-desktop
+          image: ghcr.io/bytebot-ai/bytebot-desktop:edge
+          securityContext:
+            privileged: true
+          env:
+            - name: DISPLAY
+              value: ":0"
+          ports:
+            - name: http
+              containerPort: 9990
+          volumeMounts:
+            - name: dshm
+              mountPath: /dev/shm
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "2Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: bytebot-desktop
+  namespace: ai-services
+  labels:
+    app: bytebot
+    app.kubernetes.io/component: desktop
+spec:
+  type: ClusterIP
+  selector:
+    app: bytebot
+    app.kubernetes.io/component: desktop
+  ports:
+    - name: http
+      port: 9990
+      targetPort: 9990
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bytebot-agent
+  namespace: ai-services
+  labels:
+    app: bytebot
+    app.kubernetes.io/component: agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bytebot
+      app.kubernetes.io/component: agent
+  template:
+    metadata:
+      labels:
+        app: bytebot
+        app.kubernetes.io/component: agent
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: elitemini2
+      containers:
+        - name: bytebot-agent
+          image: ghcr.io/bytebot-ai/bytebot-agent:edge
+          ports:
+            - name: http
+              containerPort: 9991
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: bytebot-postgres-secret
+                  key: DATABASE_URL
+            - name: BYTEBOT_DESKTOP_BASE_URL
+              value: "http://bytebot-desktop:9990"
+            # No ANTHROPIC/OPENAI/GEMINI_API_KEY — routes through the
+            # in-cluster LiteLLM proxy below, which fronts kagent-llm-gateway.
+            - name: BYTEBOT_LLM_PROXY_URL
+              value: "http://bytebot-llm-proxy:4000"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: bytebot-agent
+  namespace: ai-services
+  labels:
+    app: bytebot
+    app.kubernetes.io/component: agent
+spec:
+  type: ClusterIP
+  selector:
+    app: bytebot
+    app.kubernetes.io/component: agent
+  ports:
+    - name: http
+      port: 9991
+      targetPort: 9991
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bytebot-ui
+  namespace: ai-services
+  labels:
+    app: bytebot
+    app.kubernetes.io/component: ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bytebot
+      app.kubernetes.io/component: ui
+  template:
+    metadata:
+      labels:
+        app: bytebot
+        app.kubernetes.io/component: ui
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: elitemini2
+      containers:
+        - name: bytebot-ui
+          image: ghcr.io/bytebot-ai/bytebot-ui:edge
+          ports:
+            - name: http
+              containerPort: 9992
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: BYTEBOT_AGENT_BASE_URL
+              value: "http://bytebot-agent:9991"
+            - name: BYTEBOT_DESKTOP_VNC_URL
+              value: "http://bytebot-desktop:9990/websockify"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: bytebot-ui
+  namespace: ai-services
+  labels:
+    app: bytebot
+    app.kubernetes.io/component: ui
+spec:
+  type: ClusterIP
+  selector:
+    app: bytebot
+    app.kubernetes.io/component: ui
+  ports:
+    - name: http
+      port: 9992
+      targetPort: 9992
+---
+
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: bytebot-auth
+  namespace: ai-services
+  labels:
+    app: bytebot
+    app.kubernetes.io/component: ingress
+spec:
+  basicAuth:
+    secret: bytebot-basicauth
+---
+
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: bytebot-ingress
+  namespace: ai-services
+  labels:
+    app: bytebot
+    app.kubernetes.io/component: ingress
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`bytebot.example.com`)
+      kind: Rule
+      middlewares:
+        - name: bytebot-auth
+      services:
+        - name: bytebot-ui
+          port: 9992
+  tls:
+    secretName: example-tls
+---
+
+# Egress policies — one per component, least privilege. Only
+# bytebot-desktop gets public internet (its job is web browsing); no other
+# bytebot pod can reach anything outside intra-namespace traffic + DNS +
+# the kagent-llm-gateway. No cloud LLM endpoints reachable from any pod.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: bytebot-postgres-egress
+  namespace: ai-services
+  labels:
+    app: bytebot
+spec:
+  podSelector:
+    matchLabels:
+      app: bytebot
+      app.kubernetes.io/component: postgres
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: bytebot-llm-proxy-egress
+  namespace: ai-services
+  labels:
+    app: bytebot
+spec:
+  podSelector:
+    matchLabels:
+      app: bytebot
+      app.kubernetes.io/component: llm-proxy
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # kagent-llm-gateway OpenAI-compatible /v1 surface — the only LLM
+    # backend this proxy (and therefore bytebot-agent) can reach.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kagent-system
+      ports:
+        - protocol: TCP
+          port: 4000
+---
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: bytebot-agent-egress
+  namespace: ai-services
+  labels:
+    app: bytebot
+spec:
+  podSelector:
+    matchLabels:
+      app: bytebot
+      app.kubernetes.io/component: agent
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Intra-bytebot: postgres, desktop, llm-proxy — same namespace only.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: bytebot
+              app.kubernetes.io/component: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app: bytebot
+              app.kubernetes.io/component: desktop
+      ports:
+        - protocol: TCP
+          port: 9990
+    - to:
+        - podSelector:
+            matchLabels:
+              app: bytebot
+              app.kubernetes.io/component: llm-proxy
+      ports:
+        - protocol: TCP
+          port: 4000
+---
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: bytebot-ui-egress
+  namespace: ai-services
+  labels:
+    app: bytebot
+spec:
+  podSelector:
+    matchLabels:
+      app: bytebot
+      app.kubernetes.io/component: ui
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app: bytebot
+              app.kubernetes.io/component: agent
+      ports:
+        - protocol: TCP
+          port: 9991
+---
+
+# bytebot-desktop: the one pod that browses the web. DNS + unrestricted
+# 80/443 egress per the task spec. Every other public-HTTPS rule in this
+# repo (hermes-agent, homelab-builder) excludes RFC1918 so a browsing pod
+# can't pivot into LAN/cluster infra over 80/443 — same exclusion here;
+# drop the `except` block if literal 0.0.0.0/0 (LAN included) is wanted
+# instead.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: bytebot-desktop-egress
+  namespace: ai-services
+  labels:
+    app: bytebot
+spec:
+  podSelector:
+    matchLabels:
+      app: bytebot
+      app.kubernetes.io/component: desktop
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443

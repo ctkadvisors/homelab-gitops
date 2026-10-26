@@ -1,0 +1,20 @@
+---
+- name: restart ollama
+  become: true
+  ansible.builtin.systemd:
+    name: ollama
+    state: restarted
+    daemon_reload: true
+
+- name: restart ssh
+  become: true
+  ansible.builtin.systemd:
+    name: ssh
+    state: restarted
+
+- name: restart node_exporter
+  become: true
+  ansible.builtin.systemd:
+    name: node_exporter
+    state: restarted
+    daemon_reload: true

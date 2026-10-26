@@ -1,0 +1,112 @@
+---
+# The elitemini2 half of the nightly backup: the brain (neo4j), Qdrant,
+# OpenSearch, Redis, and that node's local-path PVCs (Langfuse state,
+# Bytebot postgres, the WhatsApp auth store). Same key, same target,
+# sibling directory to the control-plane job in cronjob.yaml.
+#
+# neo4j is copied live — Community has no online backup. The store is
+# checkpointed and recoverable; a weekly offline `neo4j-admin database
+# dump` is the upgrade if a restore ever comes up short.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nas-backup-elitemini2
+  namespace: backup
+spec:
+  schedule: "50 3 * * *"
+  suspend: false
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 7200
+      ttlSecondsAfterFinished: 21600
+      template:
+        spec:
+          serviceAccountName: nas-backup
+          restartPolicy: Never
+          nodeSelector:
+            kubernetes.io/hostname: elitemini2
+          containers:
+            - name: backup
+              image: alpine:3.20
+              env:
+                - name: NAS_DEST
+                  # valhalla drifted .54 -> .67 on 2026-09-08 (Deco DHCP; .54 went to
+                  # another device) and the 03:30 backups refused-on-22 for a day.
+                  # Static address in DSM is the durable fix; until then this pin.
+                  value: "homelab-user@10.0.0.67:/volume1/homelab-backup/elitemini2"
+                - name: FALLBACK_DEST
+                  # The spark keeps the same public key; used when the NAS refuses SSH
+                  # (2026-09-08 03:30Z: four failed runs, "connection refused" on :22).
+                  value: "homelab-user@10.0.0.69:/home/homelab-user/backups/homelab/elitemini2"
+              command:
+                - /bin/sh
+                - -ec
+                - |
+                  apk add --no-cache rsync openssh-client
+                  export RSYNC_RSH="ssh -i /ssh/key -o StrictHostKeyChecking=accept-new"
+                  if ! ssh -i /ssh/key -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 "${NAS_DEST%%:*}" true; then
+                    echo "NAS ${NAS_DEST%%:*} unreachable; backing up to the fallback $FALLBACK_DEST"
+                    NAS_DEST="$FALLBACK_DEST"
+                  fi
+                  ssh -i /ssh/key -o StrictHostKeyChecking=accept-new "${NAS_DEST%%:*}" "mkdir -p ${NAS_DEST#*:}"
+                  # exit 24 = a file vanished mid-copy (ClickHouse merges parts
+                  # constantly); the mirror is still good.
+                  # --rsync-path: bypass DSM's rsync wrapper (see cronjob.yaml).
+                  sync_ok() { rsync -a --rsync-path=/usr/bin/rsync "$@" || [ $? -eq 24 ]; }
+                  sync_ok /host-opt/ "$NAS_DEST/opt/"
+                  sync_ok /host-pvc/ "$NAS_DEST/pvc/"
+                  echo "backup complete: $(date -Iseconds)"
+              resources:
+                requests:
+                  memory: "256Mi"
+                  cpu: "100m"
+                limits:
+                  memory: "1Gi"
+                  cpu: "500m"
+              volumeMounts:
+                - name: opt-neo4j
+                  mountPath: /host-opt/neo4j-data
+                  readOnly: true
+                - name: opt-qdrant
+                  mountPath: /host-opt/qdrant-data
+                  readOnly: true
+                - name: opt-opensearch
+                  mountPath: /host-opt/opensearch-data
+                  readOnly: true
+                - name: opt-redis
+                  mountPath: /host-opt/redis-data
+                  readOnly: true
+                - name: pvc-data
+                  mountPath: /host-pvc
+                  readOnly: true
+                - name: ssh
+                  mountPath: /ssh
+                  readOnly: true
+          volumes:
+            - name: opt-neo4j
+              hostPath:
+                path: /opt/neo4j-data
+                type: Directory
+            - name: opt-qdrant
+              hostPath:
+                path: /opt/qdrant-data
+                type: Directory
+            - name: opt-opensearch
+              hostPath:
+                path: /opt/opensearch-data
+                type: Directory
+            - name: opt-redis
+              hostPath:
+                path: /opt/redis-data
+                type: Directory
+            - name: pvc-data
+              hostPath:
+                path: /var/lib/rancher/k3s/storage
+                type: Directory
+            - name: ssh
+              secret:
+                secretName: nas-ssh
+                defaultMode: 0400

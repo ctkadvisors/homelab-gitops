@@ -1,0 +1,19 @@
+---
+# Handlers for jetson-optimization role
+
+- name: reload systemd
+  systemd:
+    daemon_reload: yes
+  listen: "reload systemd"
+
+- name: restart jetson-performance
+  systemd:
+    name: jetson-performance
+    state: restarted
+  listen: "restart jetson-performance"
+
+- name: restart jtop
+  systemd:
+    name: jtop
+    state: restarted
+  listen: "restart jtop"

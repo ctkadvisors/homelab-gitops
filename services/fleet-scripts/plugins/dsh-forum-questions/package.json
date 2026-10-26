@@ -1,0 +1,10 @@
+{
+  "name": "@homelab/dsh-forum-questions",
+  "version": "0.1.0",
+  "description": "dsh user-questions provider that asks on the fleet's forum and waits for the reply",
+  "type": "module",
+  "main": "index.js",
+  "exports": "./index.js",
+  "keywords": ["dsh-plugin"],
+  "license": "MIT"
+}

@@ -1,0 +1,184 @@
+# fleet-node-runner — the one place the fleet may touch a node, through an
+# allow-list (services/fleet-scripts/scripts/noderun.py). Chris, 2026-09-06:
+# "read everything, write through PRs, touch nodes only through a runner with
+# an allow-list". Cluster actions (delete a cordoned NotReady node, reap
+# Failed pods) work from the ServiceAccount. Host actions (stop the retired
+# VM, flush the Deco ARP entry, restart a named unit) need the SSH identity in
+# the sealed secret `fleet-node-runner-ssh` (keys id_ed25519 + known_hosts);
+# until it is sealed the runner reports host_actions=false and refuses them.
+# Every action is a tier-3 decision in the ledger and a forum post.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fleet-node-runner
+  namespace: kagent-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fleet-node-runner
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fleet-node-runner
+subjects:
+  - { kind: ServiceAccount, name: fleet-node-runner, namespace: kagent-system }
+roleRef: { kind: ClusterRole, name: fleet-node-runner, apiGroup: rbac.authorization.k8s.io }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: fleet-node-runner-pods
+  namespace: kagent-system
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: fleet-node-runner-pods
+  namespace: kagent-system
+subjects:
+  - { kind: ServiceAccount, name: fleet-node-runner, namespace: kagent-system }
+roleRef: { kind: Role, name: fleet-node-runner-pods, apiGroup: rbac.authorization.k8s.io }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: fleet-node-runner-pods
+  namespace: ai-services
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: fleet-node-runner-pods
+  namespace: ai-services
+subjects:
+  - { kind: ServiceAccount, name: fleet-node-runner, namespace: kagent-system }
+roleRef: { kind: Role, name: fleet-node-runner-pods, apiGroup: rbac.authorization.k8s.io }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fleet-node-runner
+  namespace: kagent-system
+  labels:
+    app: fleet-node-runner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fleet-node-runner
+  template:
+    metadata:
+      labels:
+        app: fleet-node-runner
+    spec:
+      serviceAccountName: fleet-node-runner
+      enableServiceLinks: false
+      nodeSelector:
+        node-type: compute-worker
+      # root inside its own container: ssh wants a passwd entry for its uid and a
+      # 0400 key it can read; the mounted secret is root-owned. No host access
+      # beyond the allow-list either way.
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+      containers:
+        - name: runner
+          image: git.example.com/homelab/fleet-scripts:20260916-366f92e
+          command: ["python3", "/app/scripts/noderun.py"]
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - { name: FLEET_NAMESPACES, value: "kagent-system,ai-services" }
+            # name=user@ip; the hosts the sealed identity is installed on.
+            - { name: NODE_HOSTS, value: "elitemini=chris@10.0.0.76,elitemini2=chris@10.0.0.58,mini-3=homelab-user@10.0.0.56" }
+            - { name: VM_NAMES, value: "k3s-reconciler" }
+            - { name: UNITS, value: "k3s,k3s-agent,deco-keepalive" }
+          volumeMounts:
+            - { name: ledger, mountPath: /secrets/ledger, readOnly: true }
+            - { name: ssh, mountPath: /secrets/ssh, readOnly: true }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { cpu: 200m, memory: 128Mi }
+      volumes:
+        - name: ledger
+          secret:
+            secretName: fleet-ledger-dsn
+        - name: ssh
+          secret:
+            secretName: fleet-node-runner-ssh
+            optional: true
+            defaultMode: 0400
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fleet-node-runner
+  namespace: kagent-system
+spec:
+  selector:
+    app: fleet-node-runner
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fleet-node-runner
+  namespace: kagent-system
+spec:
+  podSelector:
+    matchLabels:
+      app: fleet-node-runner
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: fleet-reconcile
+        - podSelector:
+            matchExpressions:
+              - { key: app, operator: In, values: [mission, improve-daily] }
+      ports:
+        - { protocol: TCP, port: 8080 }
+  egress:
+    - to: []
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to: []
+      ports:
+        - { protocol: TCP, port: 443 }   # the API server
+        - { protocol: TCP, port: 6443 }
+    - to:
+        - ipBlock: { cidr: 10.0.0.0/24 }
+      ports:
+        - { protocol: TCP, port: 22 }    # the hosts in NODE_HOSTS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: database
+      ports:
+        - { protocol: TCP, port: 5432 }

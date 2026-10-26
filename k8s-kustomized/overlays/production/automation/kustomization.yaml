@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: automation
+
+resources:
+  - ../../../base/automation
+
+patches:
+  - path: n8n-elitemini.yaml
+  # Move n8n to EliteMini2 worker (has high-memory label)
+  - target:
+      kind: Deployment
+      name: n8n
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/nodeSelector
+        value:
+          high-memory: "true"
+      - op: replace
+        path: /spec/template/spec/tolerations
+        value: []

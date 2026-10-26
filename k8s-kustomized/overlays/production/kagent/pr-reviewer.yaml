@@ -1,0 +1,258 @@
+# pr-reviewer — Chris never looks at a PR. Every 15 min: score each open
+# PR on ctkadvisors/kagent (dsh + ornith15, local), then act:
+#   confidence >=85 + CI green + gates pass  -> merge + Telegram notify
+#   50..84 (or CI failed)                    -> PR comment feedback + label
+#   <50 or gated (size, sensitive paths)     -> escalate to Telegram
+# Deterministic rails do the dangerous parts; the model only judges.
+# Escalation replies: DM the operator agent — it carries http.github
+# comment tools to roll your feedback onto the PR.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pr-reviewer
+  namespace: kagent-system
+  labels:
+    app: pr-reviewer
+data:
+  dsh-patch.yml: |
+    # ornith15 is served by vLLM with a Qwen-style chat template. dsh's deepseek
+    # provider sends thinking:{type:disabled}, which vLLM ignores, so every step
+    # reasoned until max_tokens (4096, then 16384) and returned nothing. pi-ai's
+    # qwen-chat-template format sends chat_template_kwargs.enable_thinking=false,
+    # which the template honours (reasoning null, 4 tokens for "17*23").
+    - id: llm-pi-ai
+      config:
+        providers:
+          ornith-vllm:
+            apiKeyEnv: OPENAI_API_KEY
+            api: openai-completions
+            baseURL: http://spark-llamaswap.ai-services.svc.cluster.local:9090/v1
+            defaultContextWindow: 200000
+            defaultMaxTokens: 32768   # a long implement step is 10-20k tokens of edits and output; 16k truncated them
+            reasoning: off
+            compat:
+              thinkingFormat: qwen-chat-template
+              supportsReasoningEffort: false
+            models:
+              - id: ornith15
+                name: Ornith15
+                reasoningEfforts:
+                  off:
+                  low: low
+                  medium: medium
+                  high: high
+    - id: agent-default-model
+      config:
+        provider: ornith-vllm
+        model: ornith15
+    - id: skill-filesystem
+      config:
+        customSkillDirs: ['/fleet/skills']   # the tool paragraphs, loaded on demand (2026-09-09)
+    - insert:
+        - id: forum-questions          # ask_user_question -> a forum post, wait for the reply (harness change 3)
+          name: '@homelab/dsh-forum-questions'
+          config:
+            forumUrl: !!js process.env.FORUM_URL || 'http://fleet-console.kagent-system.svc:8081'
+            author: !!js process.env.FORUM_AUTHOR || 'implementer'
+            timeoutMs: !!js Number(process.env.FORUM_ASK_TIMEOUT_MS || 1200000)
+            pollMs: !!js Number(process.env.FORUM_ASK_POLL_MS || 30000)
+        - id: tool-ask-user
+          name: '@deepseek-ai/dsh-tool-ask-user'
+  # The judge (2026-09-08): Qwen3.8-27B dense, resident beside ornith15 on the
+  # spark (llama-swap `qwen38`, persistent group `judge`), thinking ON. Used by
+  # the stages that decide (investigate, adjudicate, test) and by pr-reviewer;
+  # ornith15 keeps the hands (implement, fix passes, chat).
+  dsh-patch-judge.yml: |
+    - id: llm-pi-ai
+      config:
+        providers:
+          qwen38-llamacpp:
+            apiKeyEnv: OPENAI_API_KEY
+            api: openai-completions
+            baseURL: http://spark-llamaswap.ai-services.svc.cluster.local:9090/v1
+            defaultContextWindow: 96000   # llama-server --ctx-size 262144 --parallel 2: one slot is 131072; 96k in + 32k out fits (hybrid attention: ~32 KB/token of KV)
+            defaultMaxTokens: 32768
+            reasoning: medium
+            compat:
+              thinkingFormat: qwen-chat-template
+              supportsReasoningEffort: false
+            models:
+              - id: qwen38
+                name: Qwen3.8-27B (judge)
+                reasoningEfforts:
+                  off:
+                  low: low
+                  medium: medium
+                  high: high
+    - id: agent-default-model
+      config:
+        provider: qwen38-llamacpp
+        model: qwen38
+    - id: skill-filesystem
+      config:
+        customSkillDirs: ['/fleet/skills']
+    - insert:
+        - id: forum-questions          # ask_user_question -> a forum post, wait for the reply (harness change 3)
+          name: '@homelab/dsh-forum-questions'
+          config:
+            forumUrl: !!js process.env.FORUM_URL || 'http://fleet-console.kagent-system.svc:8081'
+            author: !!js process.env.FORUM_AUTHOR || 'implementer'
+            timeoutMs: !!js Number(process.env.FORUM_ASK_TIMEOUT_MS || 1200000)
+            pollMs: !!js Number(process.env.FORUM_ASK_POLL_MS || 30000)
+        - id: tool-ask-user
+          name: '@deepseek-ai/dsh-tool-ask-user'
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: pr-reviewer
+  namespace: kagent-system
+  labels:
+    app: pr-reviewer
+spec:
+  # Hourly fallback since 2026-09-03: fleet-hooks reviews on GitHub events.
+  schedule: "7 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 3600   # a qwen38 verdict is 10-17 min; at 1800 a run died before kagent#59 (2026-09-15)
+      ttlSecondsAfterFinished: 3600  # a failed Job left behind keeps KubernetesJobFailed firing (two from 09-06 fired for 38h)
+      template:
+        metadata:
+          labels:
+            app: pr-reviewer
+        spec:
+          restartPolicy: Never
+          enableServiceLinks: false
+          initContainers:
+            - command:
+              - sh
+              - -c
+              - cp -r /app/. /fleet/
+              image: git.example.com/homelab/fleet-scripts:20260916-366f92e
+              name: scripts
+              resources:
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+              volumeMounts:
+              - mountPath: /fleet
+                name: fleet
+
+          containers:
+            - name: reviewer
+              image: git.example.com/homelab/agent-coder:20260830
+              command: ["python3", "/fleet/scripts/review.py"]
+              env:
+                # The judge, called directly (review.ask_judge): qwen38 resident on the spark.
+                - { name: JUDGE_URL, value: "http://spark-llamaswap.ai-services.svc.cluster.local:9090/v1" }
+                - { name: JUDGE_MODEL, value: "qwen38" }
+                - { name: JUDGE_MAX_TOKENS, value: "16384" }   # thinking + a full verdict; 8192 was cut short
+                - { name: JUDGE_DIFF_CHARS, value: "120000" }
+                - name: OPENAI_API_KEY
+                  value: local
+                - name: TELEGRAM_CHAT_ID
+                  value: "0"
+                # PRs the fleet opens through the App are authored by the bot.
+                - name: TRUSTED
+                  value: "chrisknu,example-fleet[bot]"
+                - name: PYTHONUNBUFFERED   # a 17-min review printed nothing to kubectl logs until it exited (2026-09-15)
+                  value: "1"
+              resources:
+                requests:
+                  memory: "256Mi"
+                  cpu: "100m"
+                limits:
+                  memory: "1Gi"
+                  cpu: "1000m"
+              volumeMounts:
+                - name: config
+                  mountPath: /config
+                  readOnly: true
+                - name: fleet
+                  mountPath: /fleet
+                  readOnly: true
+                - name: git-token
+                  mountPath: /secrets/git
+                  readOnly: true
+                - name: telegram
+                  mountPath: /secrets/telegram
+                  readOnly: true
+                - name: github-app
+                  mountPath: /secrets/github-app
+                  readOnly: true
+                # The ledger holds what the reviewer must remember between rounds:
+                # the head it judged, standing objections, announced merges and
+                # vetoes. Without it (2026-09-04 to 09-05) every commented PR was
+                # re-judged and re-commented hourly and tier 1 merged with no window.
+                - name: ledger
+                  mountPath: /secrets/ledger
+                  readOnly: true
+          volumes:
+            - name: fleet
+              emptyDir: {}
+            - name: ledger
+              secret:
+                secretName: fleet-ledger-dsn
+            - name: github-app
+              secret:
+                secretName: github-app
+                optional: true
+            - name: config
+              configMap:
+                name: pr-reviewer
+            - name: git-token
+              secret:
+                secretName: kagent-builder-git-token
+            - name: telegram
+              secret:
+                secretName: kagent-telegram-bot-token
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pr-reviewer-egress
+  namespace: kagent-system
+spec:
+  podSelector:
+    matchLabels:
+      app: pr-reviewer
+  policyTypes:
+    - Egress
+  egress:
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # 443 everywhere except the MetalLB address: GitHub, Telegram and the
+    # registry, but not fleet.example.com, whose LAN page carries the human
+    # steering endpoints. Stage pods talk to the forum on its own port below.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.200/32
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.69/32
+      ports:
+        - protocol: TCP
+          port: 9090
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: database
+      ports:
+        - protocol: TCP
+          port: 5432

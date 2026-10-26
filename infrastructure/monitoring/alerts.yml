@@ -1,0 +1,131 @@
+# Prometheus Alert Rules
+
+groups:
+  - name: node_alerts
+    interval: 30s
+    rules:
+      - alert: NodeDown
+        expr: up{job="node"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Node {{ $labels.instance }} is down"
+          description: "Node exporter on {{ $labels.instance }} has been down for more than 2 minutes."
+
+      - alert: HighMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage on {{ $labels.instance }}"
+          description: "Memory usage is above 90% (current value: {{ $value }}%)"
+
+      - alert: HighCPUUsage
+        expr: 100 - (avg by (instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage on {{ $labels.instance }}"
+          description: "CPU usage is above 80% (current value: {{ $value }}%)"
+
+      - alert: DiskSpaceLow
+        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low disk space on {{ $labels.instance }}"
+          description: "Disk space is below 10% (current value: {{ $value }}%)"
+
+  - name: gpu_alerts
+    interval: 30s
+    rules:
+      - alert: GPUDown
+        expr: up{job="jetson"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Jetson GPU exporter is down"
+          description: "Cannot collect GPU metrics from Jetson node"
+
+      - alert: GPUMemoryHigh
+        expr: jetson_gpu_memory_used_mb / jetson_gpu_memory_total_mb * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High GPU memory usage"
+          description: "GPU memory usage is above 90% (current value: {{ $value }}%)"
+
+      - alert: GPUTemperatureHigh
+        expr: jetson_gpu_temperature_celsius > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High GPU temperature"
+          description: "GPU temperature is above 80°C (current value: {{ $value }}°C)"
+
+  - name: service_alerts
+    interval: 30s
+    rules:
+      - alert: ServiceDown
+        expr: up{job=~"ollama|openwebui|mcpo|n8n"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "{{ $labels.job }} has been down for more than 2 minutes"
+
+      - alert: ModelRouterQueueFull
+        expr: model_router_queue_size > 8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Model router queue is nearly full"
+          description: "Queue size is {{ $value }}, approaching limit of 10"
+
+      - alert: PostgreSQLDown
+        expr: pg_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL is down"
+          description: "Cannot connect to PostgreSQL database"
+
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis is down"
+          description: "Cannot connect to Redis"
+
+  - name: model_alerts
+    interval: 30s
+    rules:
+      - alert: ModelInferenceTimeout
+        expr: rate(model_router_requests_timeout_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High rate of model inference timeouts"
+          description: "More than 10% of requests are timing out"
+
+      - alert: ModelLoadFailed
+        expr: increase(ollama_model_load_failures_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Model load failures detected"
+          description: "Failed to load models {{ $value }} times in the last 5 minutes"

@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -eq 0 ]]; then
+  echo "Usage: qwen-run '<task prompt>'" >&2
+  exit 64
+fi
+
+workspace="$(pwd -P)"
+extension_path="${QWEN_GUARD_EXT:-/app/workspace-guard.ts}"
+qwen_model="${QWEN_SPARK_MODEL:-coder}"
+qwen_tools="${QWEN_TOOLS:-read,edit,write,module_report,read_symbol,lsp_diagnostics,lsp_navigation,ast_grep_search}"
+
+if [[ ! -f "$extension_path" ]]; then
+  echo "Missing workspace guard extension: $extension_path" >&2
+  exit 66
+fi
+
+system_prompt="Your file tools are already rooted at the repository for this task; the current directory IS the repo root.
+
+Hard rules:
+- Use BARE relative paths from the repo root, e.g. \"fizzbuzz.py\" or \"src/app.py\".
+- Do NOT prefix paths with the working-directory/workspace path or reconstruct any absolute path. Putting directory path segments in front of a filename is WRONG — to create a file at the repo root, write just its name like \"fizzbuzz.py\".
+- Never call file tools with absolute paths. If a tool blocks a path, retry with a simple bare relative path.
+- Do not use bash.
+- Prefer module_report, read_symbol, lsp_navigation, lsp_diagnostics, and ast_grep_search before full-file reads.
+- Use read/edit/write only for the exact source or test body that needs a change.
+- Keep changes scoped to the user's task."
+
+set +e
+pi \
+  --provider spark \
+  --model "$qwen_model" \
+  --thinking off \
+  --offline \
+  --extension "$extension_path" \
+  --no-context-files \
+  --tools "$qwen_tools" \
+  --append-system-prompt "$system_prompt" \
+  --print \
+  "$@"
+pi_status=$?
+set -e
+
+exit "$pi_status"

@@ -1,0 +1,39 @@
+---
+# Out-of-cluster Exo inference endpoint on Mini-2 (10.0.0.58:52415).
+# Mini-2 is an Apple M4 16GB running EXO.app (https://github.com/exo-explore/exo).
+# Exo serves an OpenAI-compatible API at /v1/* — Hermes connects via the
+# `custom` provider with this base URL.
+#
+# Currently loaded: mlx-community/NVIDIA-Nemotron-Nano-9B-v2-4bits (~5GB).
+# To change the model: POST /place_instance to Exo's API, then update
+# HERMES_MODEL in hermes-agent.yaml's ConfigMap.
+apiVersion: v1
+kind: Service
+metadata:
+  name: exo-mini2
+  namespace: ai-services
+  labels:
+    app: exo-mini2
+    app.kubernetes.io/component: inference
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 52415
+      protocol: TCP
+      targetPort: 52415
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: exo-mini2
+  namespace: ai-services
+  labels:
+    app: exo-mini2
+subsets:
+  - addresses:
+      - ip: 10.0.0.58
+    ports:
+      - name: http
+        port: 52415
+        protocol: TCP

@@ -1,0 +1,17 @@
+{
+  "name": "agent-memory-mcp",
+  "version": "0.1.1",
+  "description": "MCP server for persistent agent memory backed by OpenSearch.",
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "@opensearch-project/opensearch": "3.6.0",
+    "zod": "4.4.3"
+  },
+  "license": "MIT"
+}

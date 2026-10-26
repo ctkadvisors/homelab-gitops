@@ -1,0 +1,182 @@
+---
+# Main tasks for k3s-worker role
+
+- name: Display K3s worker installation information
+  debug:
+    msg:
+      - "Installing K3s worker on {{ inventory_hostname }}"
+      - "K3s version: {{ k3s_worker_config.version }}"
+      - "Master server: {{ k3s_worker_config.server_url }}"
+      - "Node type: {{ node_type | default('worker') }}"
+  tags: always
+
+# Prerequisites
+- name: Create K3s directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - "{{ k3s_directories.config }}"
+    - "{{ k3s_directories.data }}"
+  tags: k3s
+
+- name: Check if K3s is already installed
+  stat:
+    path: "{{ k3s_worker_config.install_dir }}/k3s"
+  register: k3s_binary
+  tags: k3s
+
+- name: Check if K3s agent service is running
+  systemd:
+    name: "{{ k3s_service.name }}"
+  register: k3s_service_status
+  failed_when: false
+  tags: k3s
+
+- name: Display current K3s status
+  debug:
+    msg:
+      - "K3s binary exists: {{ k3s_binary.stat.exists }}"
+      - "K3s agent service status: {{ k3s_service_status.status.ActiveState | default('not found') }}"
+  tags: k3s
+
+# Token retrieval from master
+- name: Wait for master node to be ready
+  wait_for:
+    host: "{{ groups['k3s_masters'][0] }}"
+    port: 6443
+    timeout: "{{ token_retrieval.timeout }}"
+  tags: k3s
+
+- name: Retrieve K3s token from master
+  slurp:
+    src: "{{ k3s_files.token }}"
+  register: k3s_token_encoded
+  delegate_to: "{{ groups['k3s_masters'][0] }}"
+  retries: "{{ token_retrieval.max_retries }}"
+  delay: "{{ token_retrieval.retry_delay }}"
+  until: k3s_token_encoded is succeeded
+  tags: k3s
+
+- name: Decode K3s token
+  set_fact:
+    k3s_token: "{{ k3s_token_encoded.content | b64decode | trim }}"
+  tags: k3s
+
+- name: Display token retrieval status
+  debug:
+    msg: "K3s token retrieved successfully from master"
+  tags: k3s
+
+# K3s Installation
+- name: Download K3s installation script
+  get_url:
+    url: https://get.k3s.io
+    dest: /tmp/k3s-install.sh
+    mode: '0755'
+    timeout: 30
+  when: not k3s_binary.stat.exists or k3s_service_status.status.ActiveState != "active"
+  tags: k3s
+
+- name: Install K3s worker
+  shell: |
+    INSTALL_K3S_VERSION="{{ k3s_worker_config.version }}" \
+    K3S_URL="{{ k3s_worker_config.server_url }}" \
+    K3S_TOKEN="{{ k3s_token }}" \
+    INSTALL_K3S_EXEC="agent {{ k3s_worker_config.extra_args | join(' ') }}" \
+    /tmp/k3s-install.sh
+  environment:
+    INSTALL_K3S_VERSION: "{{ k3s_worker_config.version }}"
+    K3S_URL: "{{ k3s_worker_config.server_url }}"
+    K3S_TOKEN: "{{ k3s_token }}"
+    INSTALL_K3S_EXEC: "agent {{ k3s_worker_config.extra_args | join(' ') }}"
+  when: not k3s_binary.stat.exists or k3s_service_status.status.ActiveState != "active"
+  register: k3s_install_result
+  notify: restart k3s-agent
+  tags: k3s
+
+- name: Wait for K3s agent service to be active
+  systemd:
+    name: "{{ k3s_service.name }}"
+    state: started
+    enabled: yes
+  tags: k3s
+
+- name: Wait for kubelet to be ready
+  uri:
+    url: "{{ health_checks.kubelet.url }}"
+    method: GET
+    status_code: 200
+  register: kubelet_health_check
+  until: kubelet_health_check.status == 200
+  retries: "{{ health_checks.kubelet.retries }}"
+  delay: "{{ health_checks.kubelet.delay }}"
+  tags: k3s
+
+# Node verification from master
+- name: Wait for worker node to be ready (check from master)
+  shell: |
+    {{ k3s_worker_config.install_dir }}/k3s kubectl get nodes {{ inventory_hostname }} -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+  register: node_ready_check
+  until: node_ready_check.stdout == "True"
+  retries: "{{ health_checks.node_ready.retries }}"
+  delay: "{{ health_checks.node_ready.delay }}"
+  delegate_to: "{{ groups['k3s_masters'][0] }}"
+  tags: k3s
+
+- name: Apply node labels (from master)
+  shell: |
+    {{ k3s_worker_config.install_dir }}/k3s kubectl label node {{ inventory_hostname }} {{ item }} --overwrite
+  loop: "{{ node_labels | default([]) }}"
+  delegate_to: "{{ groups['k3s_masters'][0] }}"
+  tags: k3s
+
+# Firewall configuration
+- name: Configure firewall for K3s worker
+  ufw:
+    rule: allow
+    port: "{{ item.port }}"
+    proto: "{{ item.protocol }}"
+    comment: "{{ item.description }}"
+  loop: "{{ firewall_ports }}"
+  when: firewall_config.enabled | default(false)
+  tags: firewall
+
+# GPU-specific configuration (if applicable)
+- name: Configure GPU labels for worker
+  shell: |
+    {{ k3s_worker_config.install_dir }}/k3s kubectl label node {{ inventory_hostname }} {{ item }} --overwrite
+  loop:
+    - "nvidia.com/gpu=true"
+    - "gpu-type={{ gpu_type | default('nvidia') }}"
+  delegate_to: "{{ groups['k3s_masters'][0] }}"
+  when: gpu_enabled | default(false)
+  tags: gpu
+
+# Verification
+- name: Verify K3s installation
+  shell: |
+    {{ k3s_worker_config.install_dir }}/k3s --version
+  register: k3s_version_check
+  changed_when: false
+  tags: verification
+
+- name: Verify node status from master
+  shell: |
+    {{ k3s_worker_config.install_dir }}/k3s kubectl get node {{ inventory_hostname }}
+  register: node_status
+  delegate_to: "{{ groups['k3s_masters'][0] }}"
+  changed_when: false
+  tags: verification
+
+- name: Display K3s worker installation results
+  debug:
+    msg:
+      - "K3s version: {{ k3s_version_check.stdout }}"
+      - "Node status:"
+      - "{{ node_status.stdout_lines }}"
+      - "Worker joined cluster successfully"
+  tags: verification

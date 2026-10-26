@@ -1,0 +1,172 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: homepage-config
+  namespace: dashboard
+  labels:
+    app.kubernetes.io/name: homepage
+    app.kubernetes.io/component: config
+data:
+  settings.yaml: |
+    title: Homelab Dashboard
+    favicon: https://gethomepage.dev/img/favicon.ico
+    theme: dark
+    color: slate
+    headerStyle: clean
+    layout:
+      AI Services:
+        style: row
+        columns: 4
+      Automation:
+        style: row
+        columns: 1
+      Infrastructure:
+        style: row
+        columns: 5
+      Monitoring:
+        style: row
+        columns: 3
+      Database:
+        style: row
+        columns: 3
+
+  services.yaml: |
+    - Agent Fleet:
+        - Agent Workbench:
+            href: https://kagent.example.com
+            description: kagent fleet — agents, tasks, channels, schedules
+            icon: mdi-robot
+            siteMonitor: https://kagent.example.com
+        - Bytebot:
+            href: https://bytebot.example.com
+            description: Computer-use desktop agent (local inference)
+            icon: mdi-monitor-eye
+            siteMonitor: https://bytebot.example.com
+        - Langfuse:
+            href: https://langfuse.example.com
+            description: Agent traces and LLM observability
+            icon: mdi-chart-timeline-variant
+            siteMonitor: https://langfuse.example.com
+
+    - AI Services:
+        - OpenWebUI:
+            href: https://chat.example.com
+            description: AI Chat Interface with LocalAI
+            icon: https://docs.openwebui.com/assets/logo-dark.png
+            siteMonitor: https://chat.example.com
+        - Qdrant:
+            href: https://qdrant.example.com
+            description: Vector database for AI embeddings
+            icon: https://qdrant.tech/images/logo_with_text.svg
+            siteMonitor: https://qdrant.example.com
+        - MCPO Control Panel:
+            href: https://mcpo.example.com
+            description: MCP orchestration panel
+            icon: mdi-cog-box
+            siteMonitor: https://mcpo.example.com
+        - AI Gateway:
+            href: https://gateway-admin.example.com
+            description: AI model routing and gateway management
+            icon: mdi-router-network
+            siteMonitor: https://gateway-admin.example.com
+
+    - Automation:
+        - n8n:
+            href: https://n8n.example.com
+            description: Workflow automation and integration platform
+            icon: n8n.png
+            siteMonitor: https://n8n.example.com
+
+    - Infrastructure:
+        - ArgoCD:
+            href: https://argocd.example.com
+            description: GitOps continuous deployment
+            icon: argocd.png
+            siteMonitor: https://argocd.example.com
+        - Traefik:
+            href: https://traefik.example.com
+            description: Reverse proxy and load balancer
+            icon: traefik.png
+            siteMonitor: https://traefik.example.com
+        - Gitea:
+            href: https://git.example.com
+            description: Git hosting and container registry
+            icon: gitea.png
+            siteMonitor: https://git.example.com
+        - Platform:
+            href: https://platform.example.com
+            description: v0-clone deployment platform
+            icon: nextjs.png
+            siteMonitor: https://platform.example.com
+        - Sealed Secrets:
+            href: https://secrets.example.com
+            description: Kubernetes secret management
+            icon: mdi-lock-outline
+            siteMonitor: https://secrets.example.com
+
+    - Monitoring:
+        - Grafana:
+            href: https://grafana.example.com
+            description: Metrics visualization and dashboards
+            icon: grafana.png
+            siteMonitor: https://grafana.example.com
+        - Prometheus:
+            href: https://prometheus.example.com
+            description: Metrics collection and alerting
+            icon: prometheus.png
+            siteMonitor: https://prometheus.example.com
+        - Alertmanager:
+            href: https://alertmanager.example.com
+            description: Alert management and routing
+            icon: mdi-alert-circle-outline
+            siteMonitor: https://alertmanager.example.com
+
+    - Database:
+        - Supabase Studio:
+            href: https://studio.example.com
+            description: Supabase database and auth management
+            icon: mdi-database-cog
+            siteMonitor: https://studio.example.com
+        - pgAdmin:
+            href: https://pgadmin.example.com
+            description: PostgreSQL administration interface
+            icon: mdi-database-settings
+            siteMonitor: https://pgadmin.example.com
+        - RedisInsight:
+            href: https://redis.example.com
+            description: Redis database management and monitoring
+            icon: mdi-memory
+            siteMonitor: https://redis.example.com
+
+  widgets.yaml: |
+    - kubernetes:
+        cluster:
+          show: true
+          cpu: true
+          memory: true
+          showLabel: true
+          label: "homelab cluster"
+        nodes:
+          show: true
+          cpu: true
+          memory: true
+          showLabel: true
+
+  bookmarks.yaml: |
+    - Developer:
+        - Github:
+            - href: https://github.com/ctkadvisors/new_localai
+              icon: github.png
+        - Documentation:
+            - href: https://gethomepage.dev
+              icon: homepage.png
+
+  docker.yaml: ""
+
+  kubernetes.yaml: |
+    mode: cluster
+
+  custom.css: ""
+
+  custom.js: ""

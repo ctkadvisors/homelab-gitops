@@ -1,0 +1,23 @@
+{
+  "providers": {
+    "spark": {
+      "baseUrl": "${SPARK_BASE_URL}",
+      "api": "openai-completions",
+      "apiKey": "${SPARK_API_KEY}",
+      "compat": {
+        "supportsDeveloperRole": false
+      },
+      "models": [
+        {
+          "id": "coder",
+          "name": "Qwen3 Coder Next NVFP4 (Spark/llama-swap)",
+          "reasoning": false,
+          "input": ["text"],
+          "contextWindow": 131072,
+          "maxTokens": 32768,
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,51 @@
+---
+# Platform detection tasks for Jetson devices
+
+- name: Read device tree model
+  slurp:
+    src: /proc/device-tree/model
+  register: device_tree_model
+  failed_when: false
+  tags: detection
+
+- name: Parse device model
+  set_fact:
+    device_model: "{{ device_tree_model.content | b64decode | trim | lower }}"
+  when: device_tree_model is succeeded
+  tags: detection
+
+- name: Detect Jetson platform from device model
+  set_fact:
+    detected_platform: "{{ item.platform }}"
+  when: 
+    - device_model is defined
+    - item.pattern in device_model
+  loop:
+    - { pattern: "orin nano", platform: "orin_nano" }
+    - { pattern: "orin nx", platform: "orin_nx" }
+    - { pattern: "xavier nx", platform: "xavier_nx" }
+    - { pattern: "xavier agx", platform: "xavier_agx" }
+    - { pattern: "nano", platform: "nano" }
+  tags: detection
+
+- name: Fallback platform detection from tegra info
+  shell: |
+    cat /sys/firmware/devicetree/base/compatible 2>/dev/null | tr '\0' '\n' | grep nvidia | head -1
+  register: tegra_info
+  when: detected_platform is not defined
+  failed_when: false
+  tags: detection
+
+- name: Set fallback platform
+  set_fact:
+    detected_platform: "orin_nano"  # Default fallback
+  when: detected_platform is not defined
+  tags: detection
+
+- name: Display detected platform
+  debug:
+    msg:
+      - "Device model: {{ device_model | default('Unknown') }}"
+      - "Detected platform: {{ detected_platform }}"
+      - "Tegra info: {{ tegra_info.stdout | default('Not available') }}"
+  tags: detection

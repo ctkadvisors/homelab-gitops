@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: search
+  labels:
+    name: search
+    app.kubernetes.io/name: search
+    app.kubernetes.io/part-of: local-ai-homelab

@@ -1,0 +1,14 @@
+---
+# DNS Service Handlers
+
+- name: restart dnsmasq
+  systemd:
+    name: dnsmasq
+    state: restarted
+  become: yes
+
+- name: reload dnsmasq
+  systemd:
+    name: dnsmasq
+    state: reloaded
+  become: yes

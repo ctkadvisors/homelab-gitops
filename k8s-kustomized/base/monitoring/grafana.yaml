@@ -1,0 +1,1974 @@
+---
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: monitoring
+data:
+  prometheus.yaml: |
+    apiVersion: 1
+    datasources:
+    - name: Prometheus
+      type: prometheus
+      url: http://prometheus:9090
+      access: proxy
+      isDefault: true
+      editable: true
+      uid: prometheus
+      jsonData:
+        timeInterval: 15s
+        queryTimeout: 60s
+        httpMethod: POST
+---
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards-config
+  namespace: monitoring
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+    - name: 'default'
+      orgId: 1
+      folder: ''
+      type: file
+      disableDeletion: false
+      updateIntervalSeconds: 10
+      allowUiUpdates: true
+      options:
+        path: /var/lib/grafana/dashboards
+---
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-kubernetes
+  namespace: monitoring
+data:
+  kubernetes-cluster.json: |
+    {
+      "id": null,
+      "title": "Kubernetes Cluster Overview",
+      "tags": ["kubernetes"],
+      "style": "dark",
+      "timezone": "browser",
+      "editable": true,
+      "graphTooltip": 0,
+      "panels": [
+        {
+          "id": 1,
+          "title": "CPU Usage by Node",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\", instance=~\".*elitemini.*\"}[5m])) * 100)",
+              "refId": "A",
+              "legendFormat": "elitemini",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\", instance=~\".*elitemini2.*\"}[5m])) * 100)",
+              "refId": "B",
+              "legendFormat": "elitemini2",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\", instance=~\".*jetson1.*\"}[5m])) * 100)",
+              "refId": "C",
+              "legendFormat": "jetson1",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\", instance=~\".*jetson2.*\"}[5m])) * 100)",
+              "refId": "D",
+              "legendFormat": "jetson2",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 100,
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 70},
+                  {"color": "red", "value": 90}
+                ]
+              }
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+        },
+        {
+          "id": 2,
+          "title": "Memory Usage by Node",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "100 * (1 - (node_memory_MemAvailable_bytes{instance=~\".*elitemini.*\"} / node_memory_MemTotal_bytes{instance=~\".*elitemini.*\"}))",
+              "refId": "A",
+              "legendFormat": "elitemini",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "100 * (1 - (node_memory_MemAvailable_bytes{instance=~\".*elitemini2.*\"} / node_memory_MemTotal_bytes{instance=~\".*elitemini2.*\"}))",
+              "refId": "B",
+              "legendFormat": "elitemini2",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "100 * (1 - (node_memory_MemAvailable_bytes{instance=~\".*jetson1.*\"} / node_memory_MemTotal_bytes{instance=~\".*jetson1.*\"}))",
+              "refId": "C",
+              "legendFormat": "jetson1",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "100 * (1 - (node_memory_MemAvailable_bytes{instance=~\".*jetson2.*\"} / node_memory_MemTotal_bytes{instance=~\".*jetson2.*\"}))",
+              "refId": "D",
+              "legendFormat": "jetson2",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 100,
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 70},
+                  {"color": "red", "value": 90}
+                ]
+              }
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+        },
+        {
+          "id": 3,
+          "title": "Pod Status Overview",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "sum(kube_pod_status_phase{phase=\"Running\"})",
+              "refId": "A",
+              "legendFormat": "Running",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "sum(kube_pod_status_phase{phase=\"Pending\"})",
+              "refId": "B",
+              "legendFormat": "Pending",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "sum(kube_pod_status_phase{phase=\"Failed\"})",
+              "refId": "C",
+              "legendFormat": "Failed",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "sum(kube_pod_status_phase{phase=\"Succeeded\"})",
+              "refId": "D",
+              "legendFormat": "Succeeded",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "mappings": [
+                {
+                  "options": {
+                    "0": {
+                      "color": "dark-gray",
+                      "index": 0
+                    }
+                  },
+                  "type": "value"
+                }
+              ]
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Running"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "green"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Failed"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "red"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Pending"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "yellow"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+        },
+        {
+          "id": 4,
+          "title": "Node Status",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "kube_node_status_condition{condition=\"Ready\", status=\"true\"}",
+              "refId": "A",
+              "legendFormat": "{{node}} Ready",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "kube_node_status_condition{condition=\"Ready\", status=\"false\"}",
+              "refId": "B",
+              "legendFormat": "{{node}} NotReady",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "steps": [
+                  {"color": "red", "value": 0},
+                  {"color": "green", "value": 1}
+                ]
+              },
+              "mappings": [
+                {
+                  "options": {
+                    "0": {
+                      "color": "red",
+                      "index": 0,
+                      "text": "Not Ready"
+                    },
+                    "1": {
+                      "color": "green",
+                      "index": 1,
+                      "text": "Ready"
+                    }
+                  },
+                  "type": "value"
+                }
+              ]
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+        },
+        {
+          "id": 5,
+          "title": "ArgoCD Application Health",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "count(argocd_app_health_status{health_status=\"Healthy\"})",
+              "refId": "A",
+              "legendFormat": "Healthy",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "count(argocd_app_health_status{health_status=\"Degraded\"})",
+              "refId": "B",
+              "legendFormat": "Degraded",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "count(argocd_app_sync_status{sync_status=\"Synced\"})",
+              "refId": "C",
+              "legendFormat": "Synced",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "count(argocd_app_sync_status{sync_status=\"OutOfSync\"})",
+              "refId": "D",
+              "legendFormat": "OutOfSync",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "mappings": [
+                {
+                  "options": {
+                    "0": {
+                      "color": "dark-gray",
+                      "index": 0
+                    }
+                  },
+                  "type": "value"
+                }
+              ]
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Healthy"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "green"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Synced"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "blue"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Degraded"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "red"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "OutOfSync"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "orange"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16}
+        },
+        {
+          "id": 6,
+          "title": "Key Services Health",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "up{job=\"prometheus\"}",
+              "refId": "A",
+              "legendFormat": "Prometheus",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "up{job=\"grafana\"}",
+              "refId": "B",
+              "legendFormat": "Grafana",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "up{job=\"kubernetes-pods\", pod=~\"ollama.*\"}",
+              "refId": "C",
+              "legendFormat": "Ollama",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "up{job=\"kubernetes-pods\", pod=~\".*n8n.*\"}",
+              "refId": "D",
+              "legendFormat": "n8n",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "up{job=\"kubernetes-pods\", pod=~\"openwebui.*\"}",
+              "refId": "E",
+              "legendFormat": "OpenWebUI",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "up{job=\"kubernetes-pods\", pod=~\"traefik.*\"}",
+              "refId": "F",
+              "legendFormat": "Traefik",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "steps": [
+                  {"color": "red", "value": 0},
+                  {"color": "green", "value": 1}
+                ]
+              },
+              "mappings": [
+                {
+                  "options": {
+                    "0": {
+                      "color": "red",
+                      "index": 0,
+                      "text": "Down"
+                    },
+                    "1": {
+                      "color": "green",
+                      "index": 1,
+                      "text": "Up"
+                    }
+                  },
+                  "type": "value"
+                }
+              ]
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16}
+        },
+        {
+          "id": 7,
+          "title": "Resource Usage Over Time",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)",
+              "refId": "A",
+              "legendFormat": "{{instance}} CPU %",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))",
+              "refId": "B",
+              "legendFormat": "{{instance}} Memory %",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 100,
+              "color": {
+                "mode": "palette-classic"
+              }
+            }
+          },
+          "gridPos": {"h": 8, "w": 24, "x": 0, "y": 24}
+        },
+        {
+          "id": 8,
+          "title": "Pod Distribution by Namespace",
+          "type": "table",
+          "targets": [
+            {
+              "expr": "count by (namespace) (kube_pod_status_phase{phase=\"Running\"})",
+              "refId": "A",
+              "format": "table",
+              "instant": true,
+              "legendFormat": "Running Pods",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "displayMode": "list",
+                "filterable": true,
+                "align": "left"
+              },
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 5},
+                  {"color": "red", "value": 10}
+                ]
+              }
+            }
+          },
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "__name__": true,
+                  "job": true,
+                  "instance": true
+                },
+                "indexByName": {},
+                "renameByName": {
+                  "namespace": "Namespace",
+                  "Value": "Running Pods"
+                }
+              }
+            }
+          ],
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32}
+        },
+        {
+          "id": 9,
+          "title": "Top CPU Using Pods",
+          "type": "table",
+          "targets": [
+            {
+              "expr": "topk(10, rate(container_cpu_usage_seconds_total{container!=\"POD\", container!=\"\"}[5m]) * 100)",
+              "refId": "A",
+              "format": "table",
+              "instant": true,
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "displayMode": "list",
+                "filterable": true,
+                "align": "left"
+              },
+              "unit": "percent"
+            }
+          },
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "__name__": true,
+                  "job": true,
+                  "instance": true,
+                  "id": true,
+                  "image": true,
+                  "name": true
+                },
+                "indexByName": {},
+                "renameByName": {
+                  "pod": "Pod",
+                  "namespace": "Namespace",
+                  "container": "Container",
+                  "Value": "CPU %"
+                }
+              }
+            }
+          ],
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32}
+        }
+      ],
+      "time": {
+        "from": "now-1h",
+        "to": "now"
+      },
+      "timepicker": {},
+      "refresh": "30s",
+      "version": 2,
+      "uid": "kubernetes-cluster",
+      "schemaVersion": 30
+    }
+  node-exporter.json: |
+    {
+      "id": null,
+      "title": "Node Exporter Full",
+      "tags": ["node-exporter", "prometheus"],
+      "style": "dark",
+      "timezone": "browser",
+      "editable": true,
+      "graphTooltip": 0,
+      "panels": [
+        {
+          "id": 1,
+          "title": "CPU Usage by Node",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)",
+              "refId": "A",
+              "legendFormat": "{{instance}}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 100
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+        },
+        {
+          "id": 2,
+          "title": "Memory Usage by Node",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))",
+              "refId": "A",
+              "legendFormat": "{{instance}}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 100
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+        },
+        {
+          "id": 3,
+          "title": "Disk Usage by Node",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "100 - ((node_filesystem_avail_bytes{mountpoint=\"/\"} * 100) / node_filesystem_size_bytes{mountpoint=\"/\"})",
+              "refId": "A",
+              "legendFormat": "{{instance}}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 100
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+        },
+        {
+          "id": 4,
+          "title": "Network I/O",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "rate(node_network_receive_bytes_total{device!=\"lo\"}[5m])",
+              "refId": "A",
+              "legendFormat": "{{instance}} - {{device}} RX",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "rate(node_network_transmit_bytes_total{device!=\"lo\"}[5m])",
+              "refId": "B",
+              "legendFormat": "{{instance}} - {{device}} TX",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "Bps"
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+        }
+      ],
+      "time": {
+        "from": "now-1h",
+        "to": "now"
+      },
+      "timepicker": {},
+      "refresh": "30s",
+      "version": 1,
+      "uid": "node-exporter-full",
+      "schemaVersion": 30
+    }
+  jetson-ai-workloads.json: |
+    {
+      "id": null,
+      "title": "Jetson AI Workloads",
+      "tags": ["ai", "jetson", "ollama", "gpu"],
+      "style": "dark",
+      "timezone": "browser",
+      "editable": true,
+      "graphTooltip": 0,
+      "panels": [
+        {
+          "id": 1,
+          "title": "AI Services Status",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "up{job=\"kubernetes-pods\", app=\"ollama\"}",
+              "refId": "A",
+              "legendFormat": "Ollama",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "up{job=\"kubernetes-pods\", app=\"openwebui\"}",
+              "refId": "B",
+              "legendFormat": "OpenWebUI",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "steps": [
+                  {"color": "red", "value": 0},
+                  {"color": "green", "value": 1}
+                ]
+              }
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+        },
+        {
+          "id": 2,
+          "title": "Jetson Node Resources",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\", instance=~\".*jetson.*\"}[5m])) * 100)",
+              "refId": "A",
+              "legendFormat": "{{instance}} CPU %",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "100 * (1 - (node_memory_MemAvailable_bytes{instance=~\".*jetson.*\"} / node_memory_MemTotal_bytes{instance=~\".*jetson.*\"}))",
+              "refId": "B",
+              "legendFormat": "{{instance}} Memory %",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 100
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+        },
+        {
+          "id": 3,
+          "title": "AI Pod Resource Usage",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "rate(container_cpu_usage_seconds_total{pod=~\"ollama.*|openwebui.*\"}[5m]) * 100",
+              "refId": "A",
+              "legendFormat": "{{pod}} CPU",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "container_memory_working_set_bytes{pod=~\"ollama.*|openwebui.*\"} / 1024 / 1024",
+              "refId": "B",
+              "legendFormat": "{{pod}} Memory MB",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short"
+            }
+          },
+          "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}
+        },
+        {
+          "id": 4,
+          "title": "GPU Temperature",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "jetson_gpu_temperature_celsius{instance=\"10.0.0.73:9101\"}",
+              "refId": "A",
+              "legendFormat": "Jetson1 GPU Temp",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "jetson_gpu_temperature_celsius{instance=\"10.0.0.75:9101\"}",
+              "refId": "B",
+              "legendFormat": "Jetson2 GPU Temp",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "celsius",
+              "min": 0,
+              "max": 100,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "thresholds": {
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 60},
+                  {"color": "red", "value": 80}
+                ]
+              }
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16}
+        },
+        {
+          "id": 5,
+          "title": "GPU Utilization",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "jetson_gpu_utilization_percent{instance=\"10.0.0.73:9101\"}",
+              "refId": "A",
+              "legendFormat": "Jetson1 GPU Usage",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "jetson_gpu_utilization_percent{instance=\"10.0.0.75:9101\"}",
+              "refId": "B",
+              "legendFormat": "Jetson2 GPU Usage",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 100,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "thresholds": {
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 70},
+                  {"color": "red", "value": 90}
+                ]
+              }
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16}
+        },
+        {
+          "id": 6,
+          "title": "GPU Memory Usage",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "jetson_memory_used_bytes{instance=\"10.0.0.73:9101\"} / jetson_memory_total_bytes{instance=\"10.0.0.73:9101\"} * 100",
+              "refId": "A",
+              "legendFormat": "Jetson1 Memory %",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "jetson_memory_used_bytes{instance=\"10.0.0.75:9101\"} / jetson_memory_total_bytes{instance=\"10.0.0.75:9101\"} * 100",
+              "refId": "B",
+              "legendFormat": "Jetson2 Memory %",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 100,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "thresholds": {
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 70},
+                  {"color": "red", "value": 90}
+                ]
+              }
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24}
+        },
+        {
+          "id": 7,
+          "title": "Power Consumption",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "jetson_power_input_milliwatts{instance=\"10.0.0.73:9101\"} / 1000",
+              "refId": "A",
+              "legendFormat": "Jetson1 Total Power",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "jetson_power_input_milliwatts{instance=\"10.0.0.75:9101\"} / 1000",
+              "refId": "B",
+              "legendFormat": "Jetson2 Total Power",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "jetson_power_cpu_gpu_milliwatts{instance=\"10.0.0.73:9101\"} / 1000",
+              "refId": "C",
+              "legendFormat": "Jetson1 CPU+GPU Power",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "jetson_power_cpu_gpu_milliwatts{instance=\"10.0.0.75:9101\"} / 1000",
+              "refId": "D",
+              "legendFormat": "Jetson2 CPU+GPU Power",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "watt",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              }
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24}
+        },
+        {
+          "id": 8,
+          "title": "Jetson Comparison Dashboard",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "jetson_gpu_utilization_percent{instance=\"10.0.0.73:9101\"}",
+              "refId": "A",
+              "legendFormat": "Jetson1 GPU %",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "jetson_gpu_utilization_percent{instance=\"10.0.0.75:9101\"}",
+              "refId": "B",
+              "legendFormat": "Jetson2 GPU %",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "jetson_gpu_temperature_celsius{instance=\"10.0.0.73:9101\"}",
+              "refId": "C",
+              "legendFormat": "Jetson1 Temp",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "jetson_gpu_temperature_celsius{instance=\"10.0.0.75:9101\"}",
+              "refId": "D",
+              "legendFormat": "Jetson2 Temp",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "jetson_memory_used_bytes{instance=\"10.0.0.73:9101\"} / jetson_memory_total_bytes{instance=\"10.0.0.73:9101\"} * 100",
+              "refId": "E",
+              "legendFormat": "Jetson1 Mem %",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "jetson_memory_used_bytes{instance=\"10.0.0.75:9101\"} / jetson_memory_total_bytes{instance=\"10.0.0.75:9101\"} * 100",
+              "refId": "F",
+              "legendFormat": "Jetson2 Mem %",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 70},
+                  {"color": "red", "value": 90}
+                ]
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": ".*Temp.*"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "celsius"
+                  },
+                  {
+                    "id": "thresholds",
+                    "value": {
+                      "steps": [
+                        {"color": "green", "value": null},
+                        {"color": "yellow", "value": 60},
+                        {"color": "red", "value": 80}
+                      ]
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": ".*(GPU|Mem) %.*"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "percent"
+                  }
+                ]
+              }
+            ]
+          },
+          "gridPos": {"h": 8, "w": 24, "x": 0, "y": 32}
+        }
+      ],
+      "time": {
+        "from": "now-1h",
+        "to": "now"
+      },
+      "timepicker": {},
+      "refresh": "30s",
+      "version": 1,
+      "uid": "jetson-ai-workloads",
+      "schemaVersion": 30
+    }
+  nextjs-platform.json: |
+    {
+      "id": null,
+      "title": "Next.js Platform Monitoring",
+      "tags": ["platform", "nextjs", "builds", "deployments"],
+      "style": "dark",
+      "timezone": "browser",
+      "editable": true,
+      "graphTooltip": 0,
+      "panels": [
+        {
+          "id": 1,
+          "title": "Platform Services Status",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "up{job=\"kubernetes-pods\", app=\"platform-api\"}",
+              "refId": "A",
+              "legendFormat": "Platform API",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "up{job=\"kubernetes-pods\", app=\"platform-dashboard\"}",
+              "refId": "B",
+              "legendFormat": "Platform Dashboard",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "steps": [
+                  {"color": "red", "value": 0},
+                  {"color": "green", "value": 1}
+                ]
+              }
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+        },
+        {
+          "id": 2,
+          "title": "Platform Pods by Namespace",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "count by (namespace) (kube_pod_status_phase{phase=\"Running\", namespace=~\"platform.*\"})",
+              "refId": "A",
+              "legendFormat": "{{namespace}}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              }
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+        },
+        {
+          "id": 3,
+          "title": "Platform Resource Usage",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=~\"platform.*\"}[5m])) by (namespace)",
+              "refId": "A",
+              "legendFormat": "{{namespace}} CPU",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "sum(container_memory_working_set_bytes{namespace=~\"platform.*\"}) by (namespace) / 1024 / 1024",
+              "refId": "B",
+              "legendFormat": "{{namespace}} Memory MB",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short"
+            }
+          },
+          "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}
+        },
+        {
+          "id": 4,
+          "title": "ArgoCD Application Health",
+          "type": "table",
+          "targets": [
+            {
+              "expr": "argocd_app_health_status",
+              "refId": "A",
+              "format": "table",
+              "instant": true,
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "displayMode": "list",
+                "filterable": true
+              }
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16}
+        },
+        {
+          "id": 5,
+          "title": "Build & Deploy Metrics (Placeholder)",
+          "type": "text",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+          "options": {
+            "content": "**Build & Deploy Metrics Coming Soon**\n\nTo enable build monitoring:\n1. Add metrics to platform-api for build events\n2. Track build duration, success/failure rates\n3. Monitor deployment frequency\n4. Track resource usage per app\n\n*Custom metrics will be added to platform-api service*"
+          }
+        }
+      ],
+      "time": {
+        "from": "now-6h",
+        "to": "now"
+      },
+      "timepicker": {},
+      "refresh": "30s",
+      "version": 1,
+      "uid": "nextjs-platform",
+      "schemaVersion": 30
+    }
+  platform-infrastructure.json: |
+    {
+      "id": null,
+      "title": "Platform Infrastructure",
+      "tags": ["infrastructure", "argocd", "certificates", "storage", "network"],
+      "style": "dark",
+      "timezone": "browser",
+      "editable": true,
+      "graphTooltip": 0,
+      "panels": [
+        {
+          "id": 1,
+          "title": "ArgoCD Application Health",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "argocd_app_health_status",
+              "refId": "A",
+              "legendFormat": "{{name}} ({{health_status}})",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "steps": [
+                  {"color": "red", "value": 0},
+                  {"color": "yellow", "value": 1},
+                  {"color": "green", "value": 2}
+                ]
+              },
+              "mappings": [
+                {"options": {"0": {"text": "Degraded"}}, "type": "value"},
+                {"options": {"1": {"text": "Progressing"}}, "type": "value"},
+                {"options": {"2": {"text": "Healthy"}}, "type": "value"}
+              ]
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+        },
+        {
+          "id": 2,
+          "title": "ArgoCD Sync Status",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "argocd_app_sync_total",
+              "refId": "A",
+              "legendFormat": "{{name}} ({{phase}})",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 1},
+                  {"color": "red", "value": 5}
+                ]
+              }
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+        },
+        {
+          "id": 3,
+          "title": "Certificate Expiry Status",
+          "type": "table",
+          "targets": [
+            {
+              "expr": "(cert_manager_certificate_expiration_timestamp_seconds - time()) / 86400",
+              "refId": "A",
+              "format": "table",
+              "instant": true,
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "displayMode": "list",
+                "filterable": true
+              },
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "steps": [
+                  {"color": "red", "value": 0},
+                  {"color": "yellow", "value": 7},
+                  {"color": "green", "value": 30}
+                ]
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {"id": "byName", "options": "Value"},
+                "properties": [
+                  {"id": "displayName", "value": "Days Until Expiry"},
+                  {"id": "unit", "value": "short"}
+                ]
+              }
+            ]
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+        },
+        {
+          "id": 4,
+          "title": "Certificate Ready Status",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "certmanager_certificate_ready_status",
+              "refId": "A",
+              "legendFormat": "{{name}}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "steps": [
+                  {"color": "red", "value": 0},
+                  {"color": "green", "value": 1}
+                ]
+              },
+              "mappings": [
+                {"options": {"0": {"text": "Not Ready"}}, "type": "value"},
+                {"options": {"1": {"text": "Ready"}}, "type": "value"}
+              ]
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+        },
+        {
+          "id": 5,
+          "title": "Persistent Volume Status",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "kube_persistentvolume_status_phase",
+              "refId": "A",
+              "legendFormat": "{{persistentvolume}} ({{phase}})",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "steps": [
+                  {"color": "red", "value": 0},
+                  {"color": "yellow", "value": 1},
+                  {"color": "green", "value": 2}
+                ]
+              },
+              "mappings": [
+                {"options": {"0": {"text": "Pending"}}, "type": "value"},
+                {"options": {"1": {"text": "Available"}}, "type": "value"},
+                {"options": {"2": {"text": "Bound"}}, "type": "value"},
+                {"options": {"3": {"text": "Released"}}, "type": "value"},
+                {"options": {"4": {"text": "Failed"}}, "type": "value"}
+              ]
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16}
+        },
+        {
+          "id": 6,
+          "title": "Storage Disk Usage",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "100 - ((node_filesystem_avail_bytes{mountpoint=\"/\"} * 100) / node_filesystem_size_bytes{mountpoint=\"/\"})",
+              "refId": "A",
+              "legendFormat": "{{instance}} Root Disk %",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes * 100",
+              "refId": "B",
+              "legendFormat": "PVC {{persistentvolumeclaim}} %",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 100,
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 70},
+                  {"color": "red", "value": 90}
+                ]
+              }
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16}
+        },
+        {
+          "id": 7,
+          "title": "Network Services Health",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "up{job=~\"traefik.*\"}",
+              "refId": "A",
+              "legendFormat": "Traefik",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "up{job=~\"metallb.*\"}",
+              "refId": "B",
+              "legendFormat": "MetalLB",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "up{job=\"kubernetes-pods\", namespace=\"ingress-system\"}",
+              "refId": "C",
+              "legendFormat": "Ingress System",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "steps": [
+                  {"color": "red", "value": 0},
+                  {"color": "green", "value": 1}
+                ]
+              },
+              "mappings": [
+                {"options": {"0": {"text": "Down"}}, "type": "value"},
+                {"options": {"1": {"text": "Up"}}, "type": "value"}
+              ]
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24}
+        },
+        {
+          "id": 8,
+          "title": "Ingress & Load Balancer Status",
+          "type": "table",
+          "targets": [
+            {
+              "expr": "kube_ingress_info",
+              "refId": "A",
+              "format": "table",
+              "instant": true,
+              "legendFormat": "",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "displayMode": "list",
+                "filterable": true
+              }
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24}
+        },
+        {
+          "id": 9,
+          "title": "Sealed Secrets Controller Health",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "up{job=\"kubernetes-pods\", app_kubernetes_io_name=\"sealed-secrets\"}",
+              "refId": "A",
+              "legendFormat": "Sealed Secrets Controller",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "up{job=\"kubernetes-pods\", app=\"sealed-secrets-web\"}",
+              "refId": "B", 
+              "legendFormat": "Sealed Secrets Web",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "steps": [
+                  {"color": "red", "value": 0},
+                  {"color": "green", "value": 1}
+                ]
+              },
+              "mappings": [
+                {"options": {"0": {"text": "Down"}}, "type": "value"},
+                {"options": {"1": {"text": "Up"}}, "type": "value"}
+              ]
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32}
+        },
+        {
+          "id": 10,
+          "title": "GPU Device Plugin Status (Jetson Nodes)",
+          "type": "stat",
+          "targets": [
+            {
+              "expr": "kube_pod_status_phase{namespace=\"kube-system\", pod=~\".*nvidia-device-plugin.*\", phase=\"Running\"}",
+              "refId": "A",
+              "legendFormat": "NVIDIA Device Plugin",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "nvidia_gpu_count",
+              "refId": "B",
+              "legendFormat": "GPU Count on {{instance}}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "steps": [
+                  {"color": "red", "value": 0},
+                  {"color": "green", "value": 1}
+                ]
+              }
+            }
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32}
+        },
+        {
+          "id": 11,
+          "title": "Infrastructure Resource Usage",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=~\"argocd|cert-manager|metallb-system|ingress-system|sealed-secrets\"}[5m])) by (namespace)",
+              "refId": "A",
+              "legendFormat": "{{namespace}} CPU",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "expr": "sum(container_memory_working_set_bytes{namespace=~\"argocd|cert-manager|metallb-system|ingress-system|sealed-secrets\"}) by (namespace) / 1024 / 1024",
+              "refId": "B",
+              "legendFormat": "{{namespace}} Memory MB",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short"
+            }
+          },
+          "gridPos": {"h": 8, "w": 24, "x": 0, "y": 40}
+        }
+      ],
+      "time": {
+        "from": "now-2h",
+        "to": "now"
+      },
+      "timepicker": {},
+      "refresh": "30s",
+      "version": 2,
+      "uid": "platform-infrastructure",
+      "schemaVersion": 30
+    }
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: monitoring
+  labels:
+    app: grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+    spec:
+      nodeSelector:
+        node-type: control-plane
+      containers:
+        - name: grafana
+          image: grafana/grafana:10.2.0
+          ports:
+            - containerPort: 3000
+              name: web
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-admin
+                  key: admin-user
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-admin
+                  key: admin-password
+            - name: GF_INSTALL_PLUGINS
+              value: "grafana-clock-panel,grafana-simple-json-datasource"
+            - name: GF_SERVER_ROOT_URL
+              value: "https://grafana.example.com"
+            - name: GF_ANALYTICS_REPORTING_ENABLED
+              value: "false"
+            - name: GF_ANALYTICS_CHECK_FOR_UPDATES
+              value: "false"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "300m"
+          volumeMounts:
+            - name: grafana-storage
+              mountPath: /var/lib/grafana
+            - name: grafana-datasources
+              mountPath: /etc/grafana/provisioning/datasources
+              readOnly: true
+            - name: grafana-dashboards-config
+              mountPath: /etc/grafana/provisioning/dashboards
+              readOnly: true
+            - name: grafana-dashboards
+              mountPath: /var/lib/grafana/dashboards
+              readOnly: true
+            - name: grafana-dashboard-project-resources
+              mountPath: /var/lib/grafana/dashboards/project-resources
+              readOnly: true
+            - name: grafana-dashboard-infrastructure-overview
+              mountPath: /var/lib/grafana/dashboards/infrastructure-overview
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 60
+            timeoutSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 30
+            timeoutSeconds: 30
+      volumes:
+        - name: grafana-storage
+          hostPath:
+            path: /opt/grafana-data
+            type: DirectoryOrCreate
+        - name: grafana-datasources
+          configMap:
+            name: grafana-datasources
+        - name: grafana-dashboards-config
+          configMap:
+            name: grafana-dashboards-config
+        - name: grafana-dashboards
+          configMap:
+            name: grafana-dashboard-kubernetes
+        - name: grafana-dashboard-project-resources
+          configMap:
+            name: grafana-dashboard-project-resources
+        - name: grafana-dashboard-infrastructure-overview
+          configMap:
+            name: grafana-dashboard-infrastructure-overview
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: monitoring
+  labels:
+    app: grafana
+spec:
+  selector:
+    app: grafana
+  ports:
+    - name: web
+      port: 3000
+      targetPort: 3000
+  type: ClusterIP

@@ -1,0 +1,44 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: networking-base
+  annotations:
+    config.kubernetes.io/local-config: "true"
+
+# Resources to include
+resources:
+  - traefik.yaml
+  - ingress-routes.yaml
+  - metallb.yaml
+  - traefik-loadbalancer.yaml
+  - example-tls.yaml # single wildcard cert, reflected to consumer namespaces
+  - reflector.yaml # emberstack kubernetes-reflector 10.0.63 (vendored release manifest)
+  - cloudflared.yaml # the one inbound path from the internet (tunnel `example`, fleet-hooks only)
+  - cloudflared-token-sealed.yaml
+  # Tailscale runs on host machine - no K8s deployment needed
+  # DNS services removed - using Tailscale MagicDNS for example.com resolution
+  # - rpi-dns-manager.yaml # Removed - no longer using .homelab DNS
+  # - dns-config.yaml # Removed - no longer using .homelab DNS
+  # - dns-service.yaml # Removed - no longer using .homelab DNS
+
+# Common labels applied to all resources
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: local-ai-homelab
+      app.kubernetes.io/managed-by: kustomize
+      component: networking
+
+# Images to use
+images:
+  - name: traefik
+    newTag: v3.0
+
+# Configuration is handled by individual service manifests
+# to ensure proper namespace assignment
+
+# Common annotations
+commonAnnotations:
+  config.kubernetes.io/origin: |
+    path: k8s-kustomized/base/networking/kustomization.yaml

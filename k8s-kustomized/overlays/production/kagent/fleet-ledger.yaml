@@ -1,0 +1,117 @@
+# The fleet ledger database: the structured record behind the GitHub-issue
+# queue (fleet/ledger.py). Same shape as llm-gateway-db-bootstrap, with one
+# difference: the password and the DSN are SEALED, not plaintext (the gateway
+# one is a known plaintext-in-git debt to clean up alongside).
+#
+# Wave 3 creates role + database on the shared postgres; wave 4 runs the
+# schema migration from the fleet-scripts image; consumers (publish stage,
+# reconciler, console) mount fleet-ledger-dsn at /secrets/ledger.
+---
+
+---
+
+---
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fleet-ledger-db-bootstrap
+  namespace: database
+  annotations:
+    argocd.argoproj.io/sync-wave: '3'
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 4
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: bootstrap
+          image: pgvector/pgvector:pg16
+          env:
+            - { name: PGHOST, value: postgresql.database.svc.cluster.local }
+            - { name: PGPORT, value: '5432' }
+            - { name: PGUSER, value: postgres }
+            - name: PGPASSWORD
+              valueFrom: { secretKeyRef: { name: postgresql-secrets, key: postgres-password } }
+            - name: LEDGER_PASSWORD
+              valueFrom: { secretKeyRef: { name: fleet-ledger-pg-bootstrap, key: password } }
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              for i in {1..30}; do pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -q && break; sleep 2; done
+              pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER"
+              psql -v ON_ERROR_STOP=1 -d postgres <<SQL
+                SELECT 'CREATE DATABASE fleet' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'fleet') \gexec
+                DO \$\$
+                BEGIN
+                  IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'fleet_ledger') THEN
+                    CREATE ROLE fleet_ledger LOGIN;
+                  END IF;
+                END
+                \$\$;
+                ALTER ROLE fleet_ledger WITH PASSWORD '$LEDGER_PASSWORD';
+                GRANT ALL PRIVILEGES ON DATABASE fleet TO fleet_ledger;
+              SQL
+              psql -v ON_ERROR_STOP=1 -d fleet -c "GRANT ALL ON SCHEMA public TO fleet_ledger; ALTER DATABASE fleet OWNER TO fleet_ledger;"
+              echo "fleet ledger: role + database ready"
+---
+
+# Schema migration, idempotent (CREATE ... IF NOT EXISTS), from the same
+# image every consumer runs. Re-runs on every sync.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fleet-ledger-migrate
+  namespace: kagent-system
+  annotations:
+    argocd.argoproj.io/sync-wave: '4'
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  ttlSecondsAfterFinished: 300
+  backoffLimit: 4
+  template:
+    metadata:
+      labels:
+        app: fleet-ledger-migrate
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      containers:
+        - name: migrate
+          image: git.example.com/homelab/fleet-scripts:20260916-366f92e
+          command: ["python3", "-c", "import sys; sys.path.insert(0, '/app'); from fleet import ledger; ledger.migrate(); print('fleet ledger: schema ready')"]
+          volumeMounts:
+            - { name: ledger, mountPath: /secrets/ledger, readOnly: true }
+      volumes:
+        - name: ledger
+          secret:
+            secretName: fleet-ledger-dsn
+---
+
+# The migrate Job and every ledger consumer in kagent-system reach postgres.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fleet-ledger-migrate
+  namespace: kagent-system
+spec:
+  podSelector:
+    matchLabels:
+      app: fleet-ledger-migrate
+  policyTypes: [Egress]
+  egress:
+    - to: []
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: database
+      ports:
+        - { protocol: TCP, port: 5432 }

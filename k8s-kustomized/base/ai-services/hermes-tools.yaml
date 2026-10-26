@@ -1,0 +1,79 @@
+---
+# Hermes custom tool definitions.
+# Mounted at /opt/data/tools/tools.yaml inside the agent container; the
+# path is referenced via HERMES_TOOLS_CONFIG in hermes-config ConfigMap.
+#
+# NOTE: tool schema below follows the convention referenced in Hermes
+# v0.10 docs. Verify exact format with `hermes tools --help` after first
+# pod start; adjust this ConfigMap if the schema differs.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hermes-tools
+  namespace: ai-services
+  labels:
+    app: hermes-agent
+data:
+  tools.yaml: |
+    tools:
+      - name: search_personal_memory
+        description: |
+          Search the user's personal documents (iMessage corpus, eventually
+          Gmail) indexed in Qdrant by the doc-ingester service. Returns the
+          top-k semantically similar passages with source metadata. Use this
+          when the user asks about something they would only know from their
+          own conversations or correspondence.
+        type: http
+        request:
+          method: GET
+          url: http://doc-ingester.ai-services.svc.cluster.local:3002/api/search
+          query:
+            q: "{{query}}"
+            k: 5
+        parameters:
+          - name: query
+            type: string
+            required: true
+            description: Natural-language search query
+
+      - name: list_research_digests
+        description: |
+          List the daily research digests produced by homelab-orchestrator.
+          The orchestrator runs a CronJob each morning that drives an autonomous
+          researcher agent over a curated topic list (Cloudflare Workers AI,
+          MCP spec activity, Anthropic platform releases, etc) and writes one
+          markdown digest per topic per day. Returns JSON with arrays of
+          digests + traces, each entry has {name, size, mtime}. The digests
+          are the human-readable briefings; traces are agent-execution
+          logs (rarely needed). Call this first when the user asks
+          "what's my morning briefing", "what's new today", "give me the
+          digests", "what did the orchestrator find", or asks specifically
+          about any of the topics covered.
+        type: http
+        request:
+          method: GET
+          url: http://viewer.homelab-orchestrator.svc.cluster.local/api/manifest
+
+      - name: read_research_digest
+        description: |
+          Read the full markdown content of a single research digest by
+          filename. Use after list_research_digests has surfaced the
+          available digests. Filenames look like
+          "cloudflare-workers-ai-20260424.md" — slug + date stamp + .md.
+          Returns the raw markdown the researcher agent wrote. Summarize or
+          quote it back to the user as appropriate; don't dump the whole
+          thing unless asked.
+        type: http
+        request:
+          method: GET
+          url: http://viewer.homelab-orchestrator.svc.cluster.local/api/digest
+          query:
+            name: "{{filename}}"
+        parameters:
+          - name: filename
+            type: string
+            required: true
+            description: |
+              Digest filename including extension, e.g.
+              "cloudflare-workers-ai-20260424.md". Get valid names from
+              list_research_digests first.

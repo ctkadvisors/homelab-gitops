@@ -1,0 +1,203 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jetson-tegrastats-script
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: jetson-tegrastats-exporter
+    app.kubernetes.io/component: gpu-metrics
+data:
+  tegrastats-exporter.sh: |
+    #!/bin/bash
+    # Jetson tegrastats to Prometheus metrics exporter
+    # Parses tegrastats output and converts to Prometheus format
+    
+    set -euo pipefail
+    
+    METRICS_PORT=${METRICS_PORT:-9101}
+    METRICS_PATH=${METRICS_PATH:-/metrics}
+    INTERVAL=${INTERVAL:-5000}
+    
+    # Create metrics directory
+    mkdir -p /tmp/metrics
+    
+    # Function to parse tegrastats and generate Prometheus metrics
+    generate_metrics() {
+      local tegrastats_line="$1"
+      local timestamp=$(date +%s%3N)
+      
+      # Extract metrics using regex patterns
+      if [[ $tegrastats_line =~ RAM\ ([0-9]+)/([0-9]+)MB ]]; then
+        local ram_used=${BASH_REMATCH[1]}
+        local ram_total=${BASH_REMATCH[2]}
+        echo "# HELP jetson_memory_used_bytes Used memory in bytes"
+        echo "# TYPE jetson_memory_used_bytes gauge"
+        echo "jetson_memory_used_bytes $((ram_used * 1024 * 1024))"
+        echo "# HELP jetson_memory_total_bytes Total memory in bytes"  
+        echo "# TYPE jetson_memory_total_bytes gauge"
+        echo "jetson_memory_total_bytes $((ram_total * 1024 * 1024))"
+      fi
+      
+      if [[ $tegrastats_line =~ GR3D_FREQ\ ([0-9]+)% ]]; then
+        local gpu_util=${BASH_REMATCH[1]}
+        echo "# HELP jetson_gpu_utilization_percent GPU utilization percentage"
+        echo "# TYPE jetson_gpu_utilization_percent gauge"
+        echo "jetson_gpu_utilization_percent $gpu_util"
+      fi
+      
+      if [[ $tegrastats_line =~ gpu@([0-9]+\.?[0-9]*)C ]]; then
+        local gpu_temp=${BASH_REMATCH[1]}
+        echo "# HELP jetson_gpu_temperature_celsius GPU temperature in Celsius"
+        echo "# TYPE jetson_gpu_temperature_celsius gauge"
+        echo "jetson_gpu_temperature_celsius $gpu_temp"
+      fi
+      
+      if [[ $tegrastats_line =~ cpu@([0-9]+\.?[0-9]*)C ]]; then
+        local cpu_temp=${BASH_REMATCH[1]}
+        echo "# HELP jetson_cpu_temperature_celsius CPU temperature in Celsius"
+        echo "# TYPE jetson_cpu_temperature_celsius gauge"
+        echo "jetson_cpu_temperature_celsius $cpu_temp"
+      fi
+      
+      if [[ $tegrastats_line =~ VDD_IN\ ([0-9]+)mW ]]; then
+        local power_input=${BASH_REMATCH[1]}
+        echo "# HELP jetson_power_input_milliwatts Input power in milliwatts"
+        echo "# TYPE jetson_power_input_milliwatts gauge"
+        echo "jetson_power_input_milliwatts $power_input"
+      fi
+      
+      if [[ $tegrastats_line =~ VDD_CPU_GPU_CV\ ([0-9]+)mW ]]; then
+        local power_cpu_gpu=${BASH_REMATCH[1]}
+        echo "# HELP jetson_power_cpu_gpu_milliwatts CPU+GPU power in milliwatts"
+        echo "# TYPE jetson_power_cpu_gpu_milliwatts gauge"
+        echo "jetson_power_cpu_gpu_milliwatts $power_cpu_gpu"
+      fi
+    }
+    
+    # Install netcat and start HTTP server for metrics
+    start_http_server() {
+      # Install netcat-openbsd for HTTP server
+      apt-get update -qq && apt-get install -y -qq netcat-openbsd
+      
+      while true; do
+        echo -e "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n$(cat /tmp/metrics/jetson.prom 2>/dev/null || echo '# No metrics available')" | nc -l -p $METRICS_PORT -q 1
+      done
+    }
+    
+    # Start metrics collection
+    start_metrics_collection() {
+      tegrastats --interval $INTERVAL | while read -r line; do
+        generate_metrics "$line" > /tmp/metrics/jetson.prom
+      done
+    }
+    
+    # Start both processes
+    start_http_server &
+    start_metrics_collection
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: jetson-tegrastats-exporter
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: jetson-tegrastats-exporter
+    app.kubernetes.io/component: gpu-metrics
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: jetson-tegrastats-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: jetson-tegrastats-exporter
+        app.kubernetes.io/component: gpu-metrics
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9101"
+        prometheus.io/path: "/metrics"
+    spec:
+      nodeSelector:
+        nvidia.com/gpu: "true"
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      hostNetwork: true
+      hostPID: true
+      containers:
+        - name: jetson-tegrastats-exporter
+          image: ubuntu:22.04
+          command: ["/bin/bash"]
+          args: ["/scripts/tegrastats-exporter.sh"]
+          ports:
+            - name: http-metrics
+              containerPort: 9101
+              protocol: TCP
+          env:
+            - name: METRICS_PORT
+              value: "9101"
+            - name: INTERVAL
+              value: "5000"
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          volumeMounts:
+            - name: tegrastats-script
+              mountPath: /scripts
+              readOnly: true
+            - name: proc
+              mountPath: /host/proc
+              readOnly: true
+            - name: sys
+              mountPath: /host/sys
+              readOnly: true
+            - name: host-usr-bin
+              mountPath: /usr/bin/tegrastats
+              subPath: tegrastats
+              readOnly: true
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "100m"
+      volumes:
+        - name: tegrastats-script
+          configMap:
+            name: jetson-tegrastats-script
+            defaultMode: 0755
+        - name: proc
+          hostPath:
+            path: /proc
+        - name: sys
+          hostPath:
+            path: /sys
+        - name: host-usr-bin
+          hostPath:
+            path: /usr/bin
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jetson-tegrastats-exporter
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: jetson-tegrastats-exporter
+    app.kubernetes.io/component: gpu-metrics
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9101"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: jetson-tegrastats-exporter
+  ports:
+    - name: http-metrics
+      port: 9101
+      targetPort: 9101
+      protocol: TCP

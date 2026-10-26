@@ -1,0 +1,50 @@
+---
+# Handlers for base-system role
+
+- name: restart ssh
+  systemd:
+    name: ssh
+    state: restarted
+  listen: "restart ssh"
+
+- name: restart chrony
+  systemd:
+    name: chrony
+    state: restarted
+  listen: "restart chrony"
+
+- name: restart journald
+  systemd:
+    name: systemd-journald
+    state: restarted
+  listen: "restart journald"
+
+- name: reload systemd
+  systemd:
+    daemon_reload: yes
+  listen: "reload systemd"
+
+- name: restart networking
+  systemd:
+    name: networking
+    state: restarted
+  listen: "restart networking"
+
+- name: restart avahi-daemon
+  systemd:
+    name: avahi-daemon
+    state: restarted
+  listen: "restart avahi-daemon"
+
+- name: restart dnsmasq
+  systemd:
+    name: dnsmasq
+    state: restarted
+  listen: "restart dnsmasq"
+
+- name: reboot system
+  reboot:
+    reboot_timeout: 300
+    connect_timeout: 20
+    test_command: uptime
+  listen: "reboot system"

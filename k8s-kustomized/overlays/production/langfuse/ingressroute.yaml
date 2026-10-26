@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Chris Knuteson
+#
+# Public-ish entry point at langfuse.example.com. Tailscale + cluster
+# NetworkPolicy is the trust boundary; routing pattern matches the
+# existing openwebui IngressRoute.
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: langfuse-ingress
+  namespace: langfuse-system
+  annotations:
+    argocd.argoproj.io/sync-wave: '6'
+    traefik.ingress.kubernetes.io/router.middlewares: 'ingress-system-security-headers@kubernetescrd'
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`langfuse.example.com`)
+      kind: Rule
+      services:
+        - name: langfuse-web
+          port: 3000
+  tls:
+    # wildcard secret replicated into this namespace by kubernetes-reflector
+    secretName: example-tls
+---

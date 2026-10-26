@@ -1,0 +1,100 @@
+# SearXNG — the fleet's web search. The concierge's first "research"
+# turn drove Steel at DuckDuckGo (bot-blocked), Google (captcha) and
+# Bing (worked, budget gone): a headless browser is not a search API.
+# Exposed to agents as the tool-gateway http tool `http.web_search`
+# (providers JSON, sealed in overlays/production/kagent). CSV format
+# keeps a result page to a few hundred tokens.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: searxng-settings
+  namespace: search
+data:
+  settings.yml: |
+    use_default_settings: true
+    general:
+      instance_name: homelab-searx
+      debug: false
+    server:
+      bind_address: "0.0.0.0"
+      port: 8080
+      limiter: false
+      image_proxy: false
+    search:
+      safe_search: 0
+      autocomplete: ""
+      formats:
+        - html
+        - json
+        - csv
+    ui:
+      static_use_hash: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: searxng
+  namespace: search
+  labels:
+    app: searxng
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: searxng
+  template:
+    metadata:
+      labels:
+        app: searxng
+    spec:
+      nodeSelector:
+        node-type: compute-worker
+      containers:
+        - name: searxng
+          image: searxng/searxng:2026.9.1-18af21159
+          ports:
+            - containerPort: 8080
+          env:
+            - name: SEARXNG_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: searxng-secret
+                  key: secret
+            - name: SEARXNG_BASE_URL
+              value: http://searxng.search.svc.cluster.local:8080/
+          volumeMounts:
+            - name: settings
+              mountPath: /etc/searxng/settings.yml
+              subPath: settings.yml
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: settings
+          configMap:
+            name: searxng-settings
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: searxng
+  namespace: search
+  labels:
+    app: searxng
+spec:
+  selector:
+    app: searxng
+  ports:
+    - port: 8080
+      targetPort: 8080

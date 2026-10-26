@@ -1,0 +1,182 @@
+# fleet console — visibility + steering (services/fleet-scripts/scripts/
+# console.py). Chris, 2026-09-04: "build me a gui for visibility + steering
+# ... it SHOULD be self driving, but with this for steering." Reads the
+# ledger and GitHub; writes vetoes, `mission` / `fleet:declined` labels and
+# questions. LAN only (fleet.example.com resolves to MetalLB; it is NOT on
+# the tunnel), so no auth in front - Chris, 2026-09-04: "if its on the
+# homelab/internal network it does not need that". Never put this on the tunnel.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fleet-console
+  namespace: kagent-system
+  labels:
+    app: fleet-console
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fleet-console
+  template:
+    metadata:
+      labels:
+        app: fleet-console
+    spec:
+      serviceAccountName: fleet-console
+      enableServiceLinks: false
+      nodeSelector:
+        node-type: compute-worker
+      containers:
+        - name: console
+          image: git.example.com/homelab/fleet-scripts:20260916-366f92e
+          command: ["python3", "/app/scripts/console.py"]
+          ports:
+            - { name: http, containerPort: 8080 }
+            # The forum-only face for agents: read and post, no steering (console.py FORUM_PORT).
+            - { name: forum, containerPort: 8081 }
+          env:
+            # The knobs the page shows come from the ledger (reconcile writes what it
+            # runs with every tick); the hand-kept copy here said 3/120 for days.
+            # retry: a mission relaunches through the launcher, an improve run
+            # is a Job from the improve-daily CronJob (RBAC below).
+            - { name: LAUNCHER, value: "http://mission-launcher.kagent-system.svc.cluster.local:8080" }
+            - { name: POD_NAMESPACE, value: kagent-system }
+            - { name: REPO, value: ctkadvisors/kagent }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          volumeMounts:
+            - { name: ledger, mountPath: /secrets/ledger, readOnly: true }
+            - { name: github-app, mountPath: /secrets/github-app, readOnly: true }
+      volumes:
+        - name: ledger
+          secret:
+            secretName: fleet-ledger-dsn
+        - name: github-app
+          secret:
+            secretName: github-app
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fleet-console
+  namespace: kagent-system
+  labels:
+    app: fleet-console
+spec:
+  selector:
+    app: fleet-console
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+    - { name: forum, port: 8081, targetPort: forum }
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: fleet-console
+  namespace: kagent-system
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`fleet.example.com`)
+      kind: Rule
+      services:
+        - name: fleet-console
+          port: 8080
+  tls:
+    secretName: example-tls
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fleet-console
+  namespace: kagent-system
+spec:
+  podSelector:
+    matchLabels:
+      app: fleet-console
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - { protocol: TCP, port: 8080 }
+    # The forum (2026-09-06): the concierge reads and posts through the console's
+    # forum-only port from its code interpreter, which runs in the tool-gateway.
+    # Only that port: the steering endpoints (veto, retry, resume, label) are
+    # for humans on the LAN page, never for an agent.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: tool-gateway
+        # Stage pods (missions, improve runs) ask and report on the forum in-cluster.
+        - podSelector:
+            matchExpressions:
+              - { key: app, operator: In, values: [mission, improve-daily] }
+      ports:
+        - { protocol: TCP, port: 8081 }
+  egress:
+    - to: []
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to: []
+      ports:
+        - { protocol: TCP, port: 443 }
+        - { protocol: TCP, port: 6443 }   # the API server, for "run improve now"
+    - to:
+        - podSelector:
+            matchLabels:
+              app: mission-launcher
+      ports:
+        - { protocol: TCP, port: 8080 }   # retry a mission
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: database
+      ports:
+        - { protocol: TCP, port: 5432 }
+---
+# The console may start one improve Job from the CronJob's template (retry /
+# "run one now"); nothing else. Same shape as fleet-reconcile's role.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fleet-console
+  namespace: kagent-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: fleet-console
+  namespace: kagent-system
+rules:
+  - apiGroups: ["batch"]
+    resources: ["cronjobs"]
+    verbs: ["get"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: fleet-console
+  namespace: kagent-system
+subjects:
+  - kind: ServiceAccount
+    name: fleet-console
+    namespace: kagent-system
+roleRef:
+  kind: Role
+  name: fleet-console
+  apiGroup: rbac.authorization.k8s.io

@@ -1,0 +1,91 @@
+# Nightly off-elitemini2 copy of the mlflow-artifacts bucket (tolkien-27b
+# v2 weights, ~43G) to the DGX Spark at ~/backups/mlflow-artifacts.
+#
+# rclone syncs S3 (MinIO in-cluster) -> SFTP (spark, 10.0.0.69) using
+# the dedicated key in SealedSecret spark-backup-ssh; the matching public
+# key (comment minio-spark-backup@ml-registry) must be in
+# homelab-user@spark:~/.ssh/authorized_keys. Incremental: only changed
+# objects transfer after the first full run.
+#
+# Staleness/failure alerting lives in base/monitoring/prometheus.yaml
+# (backup-alerts group) via kube-state-metrics CronJob/Job metrics.
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: minio-spark-backup
+  namespace: ml-registry
+spec:
+  schedule: "30 7 * * *" # 03:30 ET
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 21600
+      template:
+        metadata:
+          labels:
+            app: minio-spark-backup
+        spec:
+          restartPolicy: Never
+          nodeSelector:
+            node-type: compute-worker
+          containers:
+            - name: rclone
+              image: rclone/rclone:1.67.0
+              args:
+                - sync
+                - "minio:mlflow-artifacts"
+                - "spark:backups/mlflow-artifacts"
+                - "-v"
+                - "--stats-one-line-date"
+                - "--stats=60s"
+                - "--transfers=4"
+                - "--checkers=8"
+                - "--contimeout=30s"
+                - "--timeout=5m"
+                - "--retries=3"
+              env:
+                - name: RCLONE_CONFIG_MINIO_TYPE
+                  value: s3
+                - name: RCLONE_CONFIG_MINIO_PROVIDER
+                  value: Minio
+                - name: RCLONE_CONFIG_MINIO_ENDPOINT
+                  value: http://minio.ml-registry.svc.cluster.local:9000
+                - name: RCLONE_CONFIG_MINIO_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: minio-root
+                      key: root-user
+                - name: RCLONE_CONFIG_MINIO_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: minio-root
+                      key: root-password
+                - name: RCLONE_CONFIG_SPARK_TYPE
+                  value: sftp
+                - name: RCLONE_CONFIG_SPARK_HOST
+                  value: "10.0.0.69"
+                - name: RCLONE_CONFIG_SPARK_USER
+                  value: homelab-user
+                - name: RCLONE_CONFIG_SPARK_KEY_FILE
+                  value: /ssh/id_ed25519
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: "1"
+                  memory: 512Mi
+              volumeMounts:
+                - name: ssh-key
+                  mountPath: /ssh
+                  readOnly: true
+          volumes:
+            - name: ssh-key
+              secret:
+                secretName: spark-backup-ssh
+                defaultMode: 0400

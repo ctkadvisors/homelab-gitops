@@ -1,0 +1,44 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: ai-models-pv
+  labels:
+    app.kubernetes.io/name: ai-models-storage
+    app.kubernetes.io/component: storage
+spec:
+  capacity:
+    storage: 500Gi # Adjust based on your NAS capacity
+  accessModes:
+    - ReadWriteMany # Multiple pods can read/write simultaneously
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ai-models-storage
+  hostPath:
+    path: /mnt/ai-models
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ai-models-pvc
+  namespace: ai-services
+  labels:
+    app.kubernetes.io/name: ai-models-storage
+    app.kubernetes.io/component: storage
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ai-models-storage
+  resources:
+    requests:
+      storage: 100Gi # Request subset of available storage
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ai-models-storage
+  labels:
+    app.kubernetes.io/name: ai-models-storage
+    app.kubernetes.io/component: storage
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Retain

@@ -1,0 +1,15 @@
+[Unit]
+Description=Jetson Performance Optimization Service
+After=multi-user.target
+Wants=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/jetson-performance-setup.sh
+ExecReload=/usr/local/bin/jetson-performance-setup.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

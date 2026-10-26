@@ -1,0 +1,48 @@
+---
+# Production-specific ingress configurations
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: openwebui-ingress
+  namespace: ai-services
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: "ingress-system-security-headers@kubernetescrd"
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`chat.example.com`)
+      kind: Rule
+      services:
+        - name: openwebui
+          port: 8080
+      middlewares:
+        - name: security-headers
+  tls:
+    secretName: homelab-tls
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: security-headers
+  namespace: ingress-system
+spec:
+  headers:
+    customRequestHeaders:
+      X-Forwarded-Proto: "https"
+    customResponseHeaders:
+      X-Frame-Options: "DENY"
+      X-Content-Type-Options: "nosniff"
+      X-XSS-Protection: "1; mode=block"
+      Strict-Transport-Security: "max-age=31536000; includeSubDomains"
+      Content-Security-Policy: "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: rate-limit
+  namespace: ingress-system
+spec:
+  rateLimit:
+    burst: 100
+    average: 50

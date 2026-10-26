@@ -1,0 +1,209 @@
+---
+# Global variables for all hosts in the Local AI Homelab
+
+# Project Information
+project_name: "local-ai-homelab"
+project_version: "2.0.0"
+deployment_environment: "production"
+
+# User Configuration
+ansible_user: chris
+ansible_become: true
+ansible_become_method: sudo
+
+# SSH Configuration
+ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+ansible_ssh_pipelining: true
+
+# System Configuration
+timezone: "America/Los_Angeles"
+locale: "en_US.UTF-8"
+
+# Package Management
+package_update_cache: true
+package_upgrade: false # Set to true for system updates
+
+# Essential Packages (common to all nodes)
+essential_packages:
+  - curl
+  - wget
+  - git
+  - htop
+  - vim
+  - unzip
+  - jq
+  - net-tools
+  - dnsutils
+  - ca-certificates
+  - gnupg
+  - lsb-release
+  - software-properties-common
+
+# Docker/Container Runtime
+docker_enabled: true
+docker_version: "latest"
+docker_users:
+  - "{{ ansible_user }}"
+
+# K3s Configuration
+k3s:
+  version: "v1.32.5+k3s1"
+  channel: "stable"
+  install_dir: "/usr/local/bin"
+  config_dir: "/etc/rancher/k3s"
+  data_dir: "/var/lib/rancher/k3s"
+
+  # Cluster settings
+  cluster:
+    name: "local-ai-homelab"
+    domain: "homelab"
+    cidr: "10.42.0.0/16"
+    service_cidr: "10.43.0.0/16"
+    dns: "10.43.0.10"
+
+  # Network settings
+  network:
+    plugin: "flannel"
+    backend: "vxlan"
+
+  # Security settings
+  security:
+    write_kubeconfig_mode: "0644"
+    protect_kernel_defaults: false
+
+# Networking
+network:
+  domain: "homelab"
+  cluster_network: "10.0.0.0/22"
+  metallb_ip_range: "10.0.0.200-10.0.0.210"
+  dns_servers:
+    - "8.8.8.8" # Google DNS (primary - RPi removed)
+    - "1.1.1.1" # Cloudflare DNS (fallback)
+
+# SSL/TLS Configuration
+ssl:
+  cert_dir: "/opt/ssl-certs"
+  key_size: 2048
+  validity_days: 365
+  country: "US"
+  state: "California"
+  city: "San Francisco"
+  organization: "Local AI Homelab"
+  organizational_unit: "Infrastructure"
+
+# Storage Configuration
+storage:
+  base_dir: "/opt"
+  backup_dir: "/opt/backups"
+
+  # NFS Configuration (if using Synology)
+  nfs:
+    enabled: false # Set to true when NFS is configured
+    server: "10.0.0.100"
+    base_path: "/volume1/k8s-storage"
+    mount_options: "rw,hard,intr,rsize=8192,wsize=8192,timeo=14"
+
+# Monitoring Configuration
+monitoring:
+  enabled: true
+  namespace: "monitoring"
+  retention_days: 30
+
+  # Prometheus configuration
+  prometheus:
+    enabled: true
+    storage_size: "10Gi"
+    scrape_interval: "30s"
+
+  # Grafana configuration
+  grafana:
+    enabled: true
+    admin_password: "{{ vault_grafana_admin_password | default('REDACTED') }}"
+
+# Backup Configuration
+backup:
+  enabled: true
+  schedule: "0 2 * * *" # Daily at 2 AM
+  retention_days: 7
+  destinations:
+    - local: "{{ storage.backup_dir }}"
+    - nfs: "{{ storage.nfs.base_path }}/backups"
+
+# Security Configuration
+security:
+  # Firewall settings
+  firewall:
+    enabled: false # Disabled for homelab, enable for production
+    default_policy: "deny"
+    allowed_ports:
+      - "22" # SSH
+      - "80" # HTTP
+      - "443" # HTTPS
+      - "6443" # K3s API
+      - "10250" # Kubelet
+
+  # SSH hardening
+  ssh:
+    password_authentication: false
+    permit_root_login: false
+    max_auth_tries: 3
+    client_alive_interval: 300
+
+# Tailscale Configuration (for remote access)
+tailscale:
+  enabled: false # Set to true when implementing remote access
+  auth_key: "{{ vault_tailscale_auth_key | default('') }}"
+  advertise_routes: "{{ network.cluster_network }}"
+  accept_routes: true
+
+# Application Configuration
+applications:
+  # Ollama configuration
+  ollama:
+    version: "latest"
+    models_dir: "/opt/ollama-models"
+    default_models:
+      - "llama3.2:1b"
+      - "mistral:7b-instruct"
+    gpu_enabled: true
+    keep_alive: "30m"
+
+  # OpenWebUI configuration
+  openwebui:
+    version: "main"
+    data_dir: "/opt/openwebui-data"
+    enable_signup: true
+    default_models: "mistral:7b-instruct"
+
+  # n8n configuration
+  n8n:
+    version: "latest"
+    data_dir: "/opt/n8n-data"
+    db_type: "sqlite"
+    webhook_url: "https://n8n.example.com"
+
+  # MCPO configuration
+  mcpo:
+    data_dir: "/opt/mcpo-data"
+    build_local: true # Build ARM64 image locally
+
+# Maintenance Configuration
+maintenance:
+  # Automatic updates
+  auto_update:
+    enabled: false
+    schedule: "0 3 * * 0" # Weekly on Sunday at 3 AM
+    reboot_required: false
+
+  # Log rotation
+  log_rotation:
+    enabled: true
+    max_size: "100M"
+    max_files: 5
+    compress: true
+
+# Development Configuration
+development:
+  debug_mode: false
+  verbose_logging: false
+  dry_run: false

@@ -1,0 +1,102 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opensearch-dashboards
+  namespace: search
+  labels:
+    app: opensearch-dashboards
+    app.kubernetes.io/name: opensearch-dashboards
+    app.kubernetes.io/component: dashboards
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opensearch-dashboards
+  template:
+    metadata:
+      labels:
+        app: opensearch-dashboards
+        app.kubernetes.io/name: opensearch-dashboards
+        app.kubernetes.io/component: dashboards
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: elitemini2
+      containers:
+        - name: dashboards
+          image: opensearchproject/opensearch-dashboards:3.7.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 5601
+              protocol: TCP
+          env:
+            - name: SERVER_HOST
+              value: "0.0.0.0"
+            - name: OPENSEARCH_HOSTS
+              value: '["https://opensearch.search.svc.cluster.local:9200"]'
+            - name: OPENSEARCH_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: opensearch-credentials
+                  key: admin-username
+            - name: OPENSEARCH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: opensearch-credentials
+                  key: admin-password
+            - name: OPENSEARCH_SSL_VERIFICATIONMODE
+              value: "none"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+          readinessProbe:
+            tcpSocket:
+              port: 5601
+            initialDelaySeconds: 45
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 12
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opensearch-dashboards
+  namespace: search
+  labels:
+    app: opensearch-dashboards
+    app.kubernetes.io/name: opensearch-dashboards
+    app.kubernetes.io/component: dashboards
+spec:
+  selector:
+    app: opensearch-dashboards
+  ports:
+    - name: http
+      port: 5601
+      targetPort: 5601
+      protocol: TCP
+  type: ClusterIP
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: opensearch-dashboards-ingress
+  namespace: search
+  labels:
+    app: opensearch-dashboards
+    app.kubernetes.io/name: opensearch-dashboards
+    app.kubernetes.io/component: ingress
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`search.example.com`)
+      kind: Rule
+      services:
+        - name: opensearch-dashboards
+          port: 5601
+  tls:
+    secretName: example-tls

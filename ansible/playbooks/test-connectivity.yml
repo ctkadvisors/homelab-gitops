@@ -1,0 +1,128 @@
+---
+# Test connectivity and basic Ansible functionality
+
+- name: Test Ansible connectivity to all hosts
+  hosts: all
+  gather_facts: yes
+  become: yes
+  
+  tasks:
+    - name: Test basic connectivity
+      ping:
+      tags: connectivity
+    
+    - name: Gather system information
+      setup:
+        gather_subset:
+          - "!all"
+          - "!min"
+          - "network"
+          - "hardware"
+      tags: facts
+    
+    - name: Display host information
+      debug:
+        msg:
+          - "Host: {{ inventory_hostname }}"
+          - "IP Address: {{ ansible_default_ipv4.address }}"
+          - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Architecture: {{ ansible_architecture }}"
+          - "Memory: {{ ansible_memtotal_mb }}MB"
+          - "CPU cores: {{ ansible_processor_vcpus }}"
+          - "Kernel: {{ ansible_kernel }}"
+      tags: info
+    
+    - name: Test sudo access
+      command: whoami
+      register: sudo_test
+      tags: sudo
+    
+    - name: Display sudo test result
+      debug:
+        msg: "Sudo access: {{ 'OK' if sudo_test.stdout == 'root' else 'FAILED' }}"
+      tags: sudo
+    
+    - name: Check disk space
+      shell: df -h /
+      register: disk_space
+      tags: disk
+    
+    - name: Display disk space
+      debug:
+        msg: "Root filesystem: {{ disk_space.stdout_lines[1] }}"
+      tags: disk
+    
+    - name: Check if Docker is installed
+      command: docker --version
+      register: docker_check
+      failed_when: false
+      changed_when: false
+      tags: docker
+    
+    - name: Display Docker status
+      debug:
+        msg: "Docker: {{ 'Installed - ' + docker_check.stdout if docker_check.rc == 0 else 'Not installed' }}"
+      tags: docker
+    
+    - name: Check if NVIDIA GPU is present (GPU workers only)
+      command: nvidia-smi
+      register: nvidia_check
+      failed_when: false
+      changed_when: false
+      when: inventory_hostname in groups['gpu_workers']
+      tags: gpu
+    
+    - name: Display GPU status
+      debug:
+        msg: "NVIDIA GPU: {{ 'Available' if nvidia_check.rc == 0 else 'Not available' }}"
+      when: inventory_hostname in groups['gpu_workers']
+      tags: gpu
+
+- name: Test group-specific configurations
+  hosts: k3s_masters
+  gather_facts: no
+  become: yes
+  
+  tasks:
+    - name: Test master node specific checks
+      debug:
+        msg:
+          - "This is a K3s master node"
+          - "Services to run: {{ services | default([]) }}"
+      tags: master
+
+- name: Test worker node configurations
+  hosts: k3s_workers
+  gather_facts: no
+  become: yes
+  
+  tasks:
+    - name: Test worker node specific checks
+      debug:
+        msg:
+          - "This is a K3s worker node"
+          - "Node type: {{ node_type | default('worker') }}"
+          - "GPU enabled: {{ gpu_enabled | default(false) }}"
+      tags: worker
+
+- name: Summary report
+  hosts: localhost
+  gather_facts: no
+  become: no
+  
+  tasks:
+    - name: Display connectivity test summary
+      debug:
+        msg:
+          - "Ansible connectivity test completed"
+          - "Total hosts tested: {{ groups['all'] | length }}"
+          - "Master nodes: {{ groups['k3s_masters'] | length }}"
+          - "Worker nodes: {{ groups['k3s_workers'] | length }}"
+          - "GPU workers: {{ groups['gpu_workers'] | length }}"
+          - ""
+          - "Next steps:"
+          - "1. Run: ansible-playbook -i inventory/hosts.yml playbooks/site.yml --tags base"
+          - "2. Implement K3s installation roles"
+          - "3. Test full cluster deployment"
+      tags: summary
+      run_once: true

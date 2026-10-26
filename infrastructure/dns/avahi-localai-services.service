@@ -1,0 +1,30 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<service-group>
+  <name replace-wildcards="yes">LocalAI Infrastructure</name>
+  <service>
+    <type>_https._tcp</type>
+    <port>443</port>
+    <host-name>chat.local</host-name>
+  </service>
+  <service>
+    <type>_https._tcp</type>
+    <port>443</port>
+    <host-name>n8n.local</host-name>
+  </service>
+  <service>
+    <type>_https._tcp</type>
+    <port>443</port>
+    <host-name>ollama.local</host-name>
+  </service>
+  <service>
+    <type>_https._tcp</type>
+    <port>443</port>
+    <host-name>mcpo.local</host-name>
+  </service>
+  <service>
+    <type>_https._tcp</type>
+    <port>443</port>
+    <host-name>mcpo-ui.local</host-name>
+  </service>
+</service-group>

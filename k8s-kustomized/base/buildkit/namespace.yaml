@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: platform-builds
+  labels:
+    name: platform-builds
+    component: buildkit
+    app.kubernetes.io/name: buildkit
+    app.kubernetes.io/component: build-infrastructure

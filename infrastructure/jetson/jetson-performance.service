@@ -1,0 +1,11 @@
+[Unit]
+Description=Jetson Performance Optimization
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'nvpmodel -m 2 && jetson_clocks'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

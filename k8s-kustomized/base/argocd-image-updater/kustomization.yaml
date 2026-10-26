@@ -1,0 +1,51 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: argocd-image-updater
+
+namespace: argocd
+
+resources:
+  - install.yaml # Downloaded from https://github.com/argoproj-labs/argocd-image-updater/v0.16.0/manifests/install.yaml
+  - image-updater-registry-secret.yaml
+
+# Configure ArgoCD Image Updater
+# Use strategic merge patches for ConfigMap to avoid conflicts with upstream install.yaml
+patches:
+  - path: image-updater-config.yaml
+  - target:
+      kind: Deployment
+      name: argocd-image-updater
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/args
+        value: ["run", "--interval", "2m", "--once=false", "--dry-run=false"]
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: ARGOCD_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: argocd-image-updater-secret
+              key: argocd.token
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: ARGOCD_SERVER
+          value: "argocd-server:443"
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: ARGOCD_INSECURE
+          value: "false"
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: ARGOCD_PLAINTEXT
+          value: "false"
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: argocd-image-updater
+      app.kubernetes.io/managed-by: kustomize

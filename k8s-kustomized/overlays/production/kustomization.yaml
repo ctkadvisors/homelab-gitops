@@ -1,0 +1,160 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+metadata:
+  name: local-ai-homelab-production
+  annotations:
+    config.kubernetes.io/local-config: "true"
+    description: "Production overlay for Local AI Homelab"
+# Base configuration to extend (excluding monitoring for separate application)
+resources:
+  - base-without-monitoring # Custom base excluding monitoring
+  - automation # Use automation overlay for EliteMini deployment
+  - dashboard # Use dashboard overlay for EliteMini deployment
+  - database # PostgreSQL database on EliteMini
+  - gitea # Gitea Git hosting and container registry
+  - kagent # kagent ArgoCD Application (operator + smoke test)
+  - bytebot # Bytebot — AI desktop agent (computer use), LLM via kagent-llm-gateway/ornith15
+  - langfuse # Langfuse — LLM observability + prompt management
+  - arc # GitHub Actions runners on our hardware (actions-runner-controller), no metered minutes
+  # argocd-image-updater excluded - already deployed via Helm/ArgoCD
+  # TLS secrets are now managed by cert-manager automatically
+# Production-specific labels
+labels:
+  - pairs:
+      environment: production
+      deployment: homelab-prod
+# Production-specific annotations
+commonAnnotations:
+  deployment.kubernetes.io/environment: "production"
+  homelab.local/deployment-date: "2025-01-27"
+# Production image tags (pinned versions for stability)
+# Note: Images managed by ArgoCD Image Updater are automatically added here
+images:
+  - name: localai/localai
+    newTag: latest-nvidia-l4t-arm64
+  - name: n8nio/n8n
+    newTag: "2.2.4"
+  # Manually managed images:
+  - name: traefik
+    newTag: "v3.0" # Use latest v3.0.x version
+  - name: registry.k8s.io/metrics-server/metrics-server
+    newTag: "v0.7.0"
+  - name: pgvector/pgvector
+    newTag: "pg16" # PostgreSQL 16 with pgvector extension
+  # open-webui image tag set directly in base manifest (v0.8.10)
+# Production-specific configuration
+# Note: ConfigMaps and Secrets are defined in individual service directories
+# to ensure proper namespace assignment
+# Production-specific resource adjustments
+replicas:
+  - name: openwebui
+    count: 1
+  - name: n8n
+    count: 1
+  - name: traefik
+    count: 1
+# Production patches for enhanced security and performance
+patches:
+  # Add production-specific environment variables
+  - target:
+      kind: Deployment
+      name: openwebui
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: ENVIRONMENT
+          value: "production"
+  # Node selector is set in base configuration
+  - target:
+      kind: Deployment
+      name: openwebui
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/nodeSelector
+        value:
+          node-role.kubernetes.io/control-plane: "true"
+  - target:
+      kind: Deployment
+      name: n8n
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/nodeSelector
+        value:
+          node-role.kubernetes.io/control-plane: "true"
+  # Fix node selectors for other deployments
+  - target:
+      kind: Deployment
+      name: mcpo-control-panel
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/nodeSelector
+        value:
+          node-role.kubernetes.io/control-plane: "true"
+  - target:
+      kind: Deployment
+      name: postgresql
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/nodeSelector
+        value:
+          node-role.kubernetes.io/control-plane: "true"
+  - target:
+      kind: Deployment
+      name: homepage
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/nodeSelector
+        value:
+          node-role.kubernetes.io/control-plane: "true"
+  # Qdrant must stay on elitemini2 — hostPath data at /opt/qdrant-data
+  - target:
+      kind: Deployment
+      name: qdrant
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/nodeSelector
+        value:
+          kubernetes.io/hostname: elitemini2
+  # Note: Control-plane node has no taints, so no tolerations needed
+  # Fix service selectors to match pod labels (remove production labels from selectors)
+  - target:
+      kind: Service
+      name: traefik
+    patch: |-
+      - op: replace
+        path: /spec/selector
+        value:
+          app: traefik
+  - target:
+      kind: Service
+      name: localai
+    patch: |-
+      - op: replace
+        path: /spec/selector
+        value:
+          app: localai
+  - target:
+      kind: Service
+      name: openwebui
+    patch: |-
+      - op: replace
+        path: /spec/selector
+        value:
+          app: openwebui
+  - target:
+      kind: Service
+      name: n8n
+    patch: |-
+      - op: replace
+        path: /spec/selector
+        value:
+          app: n8n
+  - target:
+      kind: Service
+      name: metrics-server
+    patch: |-
+      - op: replace
+        path: /spec/selector
+        value:
+          app: metrics-server

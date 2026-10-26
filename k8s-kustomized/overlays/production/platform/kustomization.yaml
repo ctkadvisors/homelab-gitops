@@ -1,0 +1,27 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: nextjs-platform-production
+  annotations:
+    config.kubernetes.io/local-config: "true"
+    description: "Next.js Platform ArgoCD Applications for Production"
+
+# ArgoCD Applications for Next.js Platform
+resources:
+  - ../../../../k8s/argocd-apps/nextjs-platform-app.yaml
+  - ../../../../k8s/argocd-apps/vercel-apps-manager.yaml
+
+# Production-specific labels for platform applications
+labels:
+  - pairs:
+      environment: production
+      deployment: homelab-prod
+      component: nextjs-platform
+
+# Production-specific annotations
+commonAnnotations:
+  deployment.kubernetes.io/environment: "production"
+  homelab.local/deployment-date: "2025-06-15"
+  argocd.argoproj.io/managed-by: "homelab-apps"

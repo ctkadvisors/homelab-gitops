@@ -1,0 +1,203 @@
+---
+# K3s Master Node Configuration
+
+# K3s Master Role
+k3s_role: "master"
+k3s_server: true
+k3s_agent: false
+
+# K3s Master Configuration
+k3s_master:
+  # Installation options
+  install_options:
+    - "--cluster-domain={{ k3s.cluster.domain }}"
+    - "--disable=traefik"
+    - "--disable=servicelb"
+    - "--disable=local-storage"
+    - "--write-kubeconfig-mode={{ k3s.security.write_kubeconfig_mode }}"
+    - "--bind-address=0.0.0.0"
+    - "--advertise-address={{ ansible_default_ipv4.address }}"
+    - "--node-external-ip={{ ansible_default_ipv4.address }}"
+  
+  # Disabled components (we'll install our own)
+  disable_components:
+    - traefik      # Using our own Traefik configuration
+    - servicelb    # Using MetalLB instead
+    - local-storage # Using NFS/hostPath strategy
+  
+  # Kubeconfig settings
+  kubeconfig:
+    path: "/etc/rancher/k3s/k3s.yaml"
+    mode: "0644"
+    backup_path: "/home/{{ ansible_user }}/kubeconfig"
+
+# Node Labels and Taints
+node_labels:
+  - "node-role.kubernetes.io/master=true"
+  - "node-type=control-plane"
+  - "kubernetes.io/hostname={{ inventory_hostname }}"
+
+# No taints for master (allow workloads on single-master setup)
+node_taints: []
+
+# Data Directories for Master Node Services
+data_directories:
+  - path: "/opt/openwebui-data"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0755"
+    description: "OpenWebUI persistent data"
+  
+  - path: "/opt/n8n-data"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0755"
+    description: "n8n workflow data"
+  
+  - path: "/opt/mcpo-data"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0755"
+    description: "MCPO control panel data"
+  
+  - path: "/opt/mcpo-control-panel-data"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0755"
+    description: "MCPO control panel configuration"
+  
+  - path: "{{ ssl.cert_dir }}"
+    owner: "root"
+    group: "root"
+    mode: "0755"
+    description: "SSL certificates directory"
+  
+  - path: "{{ backup.destinations[0].local }}"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: "0755"
+    description: "Local backup storage"
+
+# Services Configuration for Master Node
+services:
+  # DNS/mDNS Configuration
+  dns:
+    enabled: true
+    avahi_enabled: true
+    dnsmasq_enabled: true
+    domain: "{{ network.domain }}"
+    
+    # Avahi service configuration
+    avahi_services:
+      - name: "LocalAI Infrastructure"
+        type: "_https._tcp"
+        port: 443
+        domain: "{{ network.domain }}"
+    
+    # dnsmasq configuration
+    dnsmasq:
+      config_file: "/etc/dnsmasq.d/localai.conf"
+      upstream_servers: "{{ network.dns_servers[1:] }}"
+      local_domain: "{{ network.domain }}"
+      address_mappings:
+        - "chat.{{ network.domain }}/{{ ansible_default_ipv4.address }}"
+        - "n8n.{{ network.domain }}/{{ ansible_default_ipv4.address }}"
+        - "ollama.{{ network.domain }}/{{ ansible_default_ipv4.address }}"
+        - "mcpo.{{ network.domain }}/{{ ansible_default_ipv4.address }}"
+        - "mcpo-ui.{{ network.domain }}/{{ ansible_default_ipv4.address }}"
+
+  # Traefik Configuration
+  traefik:
+    enabled: true
+    dashboard_enabled: true
+    dashboard_port: 8080
+    ssl_enabled: true
+    
+  # Monitoring Services
+  monitoring:
+    prometheus_enabled: "{{ monitoring.prometheus.enabled }}"
+    grafana_enabled: "{{ monitoring.grafana.enabled }}"
+    node_exporter_enabled: true
+
+# Resource Limits for Master Node
+resource_limits:
+  # Conservative limits for RPi
+  cpu:
+    reserved: "500m"  # Reserve 0.5 CPU cores for system
+    available: "3500m" # 3.5 cores available for workloads
+  
+  memory:
+    reserved: "1Gi"   # Reserve 1GB for system
+    available: "7Gi"  # 7GB available for workloads
+  
+  storage:
+    root_reserved: "2Gi"  # Reserve space on root filesystem
+    data_available: "50Gi" # Available for application data
+
+# Network Configuration
+network_config:
+  # Firewall rules specific to master
+  firewall_rules:
+    - port: 6443
+      protocol: tcp
+      source: "{{ network.cluster_network }}"
+      description: "K3s API server"
+    
+    - port: 10250
+      protocol: tcp
+      source: "{{ network.cluster_network }}"
+      description: "Kubelet API"
+    
+    - port: 8080
+      protocol: tcp
+      source: "{{ network.cluster_network }}"
+      description: "Traefik dashboard"
+    
+    - port: 80
+      protocol: tcp
+      source: "0.0.0.0/0"
+      description: "HTTP ingress"
+    
+    - port: 443
+      protocol: tcp
+      source: "0.0.0.0/0"
+      description: "HTTPS ingress"
+
+# Backup Configuration for Master
+backup_config:
+  # K3s cluster state backup
+  k3s_backup:
+    enabled: true
+    schedule: "0 1 * * *"  # Daily at 1 AM
+    retention: 7
+    include:
+      - "/var/lib/rancher/k3s/server/db"
+      - "/etc/rancher/k3s"
+      - "/opt/openwebui-data"
+      - "/opt/n8n-data"
+      - "/opt/mcpo-data"
+  
+  # Configuration backup
+  config_backup:
+    enabled: true
+    schedule: "0 0 * * 0"  # Weekly on Sunday
+    retention: 4
+    include:
+      - "/etc"
+      - "/home/{{ ansible_user }}"
+
+# Health Checks
+health_checks:
+  - name: "K3s API Server"
+    url: "https://localhost:6443/healthz"
+    expected_status: 200
+    timeout: 10
+  
+  - name: "Traefik Dashboard"
+    url: "http://localhost:8080/ping"
+    expected_status: 200
+    timeout: 5
+  
+  - name: "DNS Resolution"
+    command: "nslookup chat.{{ network.domain }}"
+    expected_return_code: 0

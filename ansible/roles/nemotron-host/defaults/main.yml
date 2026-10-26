@@ -1,0 +1,25 @@
+---
+# nemotron-host defaults
+ollama_host_bind: "0.0.0.0:11434"
+ollama_models:
+  - nemotron-3-nano:4b
+
+# Node-exporter upstream binary (avoids Jetson-incompatible collectors in Debian's 1.3.1)
+node_exporter_version: "1.11.1"
+node_exporter_url: "https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/node_exporter-{{ node_exporter_version }}.linux-arm64.tar.gz"
+node_exporter_collectors:
+  - cpu
+  - cpufreq
+  - meminfo
+  - loadavg
+  - filesystem
+  - filefd
+  - netdev
+  - stat
+  - time
+  - uname
+  - diskstats
+  - processes
+
+# LAN CIDR allowed to reach this host
+lan_cidr: "10.0.0.0/22"

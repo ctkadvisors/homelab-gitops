@@ -1,0 +1,47 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgresql
+  namespace: database
+spec:
+  template:
+    spec:
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: "true" # EliteMini
+      containers:
+        - name: postgresql
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "3Gi"
+              cpu: "2000m"
+          env:
+            - name: POSTGRES_SHARED_PRELOAD_LIBRARIES
+              value: "vector,pg_stat_statements"
+            - name: POSTGRES_MAX_CONNECTIONS
+              value: "200"
+            - name: POSTGRES_SHARED_BUFFERS
+              value: "512MB"
+            - name: POSTGRES_EFFECTIVE_CACHE_SIZE
+              value: "2GB"
+            - name: POSTGRES_MAINTENANCE_WORK_MEM
+              value: "256MB"
+            - name: POSTGRES_CHECKPOINT_COMPLETION_TARGET
+              value: "0.9"
+            - name: POSTGRES_WAL_BUFFERS
+              value: "16MB"
+            - name: POSTGRES_DEFAULT_STATISTICS_TARGET
+              value: "100"
+            - name: POSTGRES_RANDOM_PAGE_COST
+              value: "1.1"
+            - name: POSTGRES_EFFECTIVE_IO_CONCURRENCY
+              value: "200"
+            - name: POSTGRES_WORK_MEM
+              value: "4MB"
+            - name: POSTGRES_MIN_WAL_SIZE
+              value: "1GB"
+            - name: POSTGRES_MAX_WAL_SIZE
+              value: "4GB"

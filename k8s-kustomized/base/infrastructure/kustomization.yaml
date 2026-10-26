@@ -1,0 +1,32 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: infrastructure-base
+  annotations:
+    config.kubernetes.io/local-config: "true"
+
+# Resources to include
+resources:
+  - nvidia-device-plugin.yaml
+  - cert-manager.yaml
+  - sealed-secrets.yaml
+  - cert-medic.yaml # self-healing for the wildcard cert (docs/runbooks/tls-wildcard.md)
+  # Note: cert-manager installation is managed by separate ArgoCD application
+  # monitoring.yaml moved to monitoring-stack application to avoid conflicts
+
+# Common labels applied to all resources
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: local-ai-homelab
+      app.kubernetes.io/managed-by: kustomize
+      component: infrastructure
+
+# Common annotations
+commonAnnotations:
+  config.kubernetes.io/origin: |
+    path: k8s-kustomized/base/infrastructure/kustomization.yaml
+
+# Images to use
+# metrics-server image moved to monitoring-stack

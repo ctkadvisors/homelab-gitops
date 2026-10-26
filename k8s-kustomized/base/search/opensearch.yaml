@@ -1,0 +1,123 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opensearch
+  namespace: search
+  labels:
+    app: opensearch
+    app.kubernetes.io/name: opensearch
+    app.kubernetes.io/component: search-engine
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: opensearch
+  template:
+    metadata:
+      labels:
+        app: opensearch
+        app.kubernetes.io/name: opensearch
+        app.kubernetes.io/component: search-engine
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: elitemini2
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      initContainers:
+        - name: set-vm-max-map-count
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              sysctl -w vm.max_map_count=262144
+              chown -R 1000:1000 /usr/share/opensearch/data
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: opensearch-data
+              mountPath: /usr/share/opensearch/data
+      containers:
+        - name: opensearch
+          image: opensearchproject/opensearch:3.7.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - opensearch
+            - -Ecluster.name=homelab-search
+            - -Enode.name=$(POD_NAME)
+            - -Ediscovery.type=single-node
+            - -Ebootstrap.memory_lock=false
+          ports:
+            - name: http
+              containerPort: 9200
+              protocol: TCP
+            - name: metrics
+              containerPort: 9600
+              protocol: TCP
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OPENSEARCH_JAVA_OPTS
+              value: "-Xms6g -Xmx6g"
+            - name: OPENSEARCH_INITIAL_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: opensearch-credentials
+                  key: admin-password
+          resources:
+            requests:
+              cpu: "2000m"
+              memory: "10Gi"
+            limits:
+              cpu: "8000m"
+              memory: "18Gi"
+          volumeMounts:
+            - name: opensearch-data
+              mountPath: /usr/share/opensearch/data
+          readinessProbe:
+            tcpSocket:
+              port: 9200
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 18
+          livenessProbe:
+            tcpSocket:
+              port: 9200
+            initialDelaySeconds: 180
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 6
+      volumes:
+        - name: opensearch-data
+          hostPath:
+            path: /opt/opensearch-data
+            type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opensearch
+  namespace: search
+  labels:
+    app: opensearch
+    app.kubernetes.io/name: opensearch
+    app.kubernetes.io/component: search-engine
+spec:
+  selector:
+    app: opensearch
+  ports:
+    - name: http
+      port: 9200
+      targetPort: 9200
+      protocol: TCP
+    - name: metrics
+      port: 9600
+      targetPort: 9600
+      protocol: TCP
+  type: ClusterIP

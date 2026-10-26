@@ -1,0 +1,10 @@
+# Kustomization for legacy build system cleanup
+# This should be applied with --prune to remove resources
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Resources to delete - these are marked for deletion
+resources: []
+
+# We use an empty resources list because we want to delete, not create
+# The actual deletion will be handled by kubectl delete commands in the deployment script

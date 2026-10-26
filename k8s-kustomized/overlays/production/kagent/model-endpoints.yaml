@@ -1,0 +1,242 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Chris Knuteson
+#
+# ModelEndpoint declarations — the per-(model, backend) capacity caps
+# the operator's admission reconciler reads to queue Pending Jobs and
+# the gateway reads to enforce its AIMD-tuned in-flight cap.
+#
+# Today we have ONE local backend: Jetson1 bare-metal model server at
+# 10.0.0.73:11434 serving nemotron-3-nano:4b. kagent talks to its
+# OpenAI-compatible /v1 surface so structured tool calls are preserved.
+# Single GPU, ~4GB VRAM headroom — practical concurrency is 1-2
+# in-flight before latency degrades. AIMD will tune the cap inside the
+# seed=1, max=4 bounds based on observed 429s + latency.
+#
+# POLICY (Chris, 2026-09-01): ALL INTERNAL AI — no cloud model
+# endpoints, ever. The commented Cloudflare blocks below are kept only
+# as history of the disarm; do not re-arm them.
+#
+# Spark model menu lives in spark:~/inference/llama-swap/config.yaml —
+# check it before assuming what's available (it grows).
+---
+apiVersion: kagent.example.com/v1alpha1
+kind: ModelEndpoint
+metadata:
+  name: nemotron-jetson
+  namespace: kagent-system
+  annotations:
+    argocd.argoproj.io/sync-wave: '7'
+spec:
+  model: 'nemotron-3-nano:4b'
+  backendKind: localai
+  backendUrl: 'http://10.0.0.73:11434/v1'
+  inFlight:
+    seed: 1
+    max: 4
+  minSafe: 1
+---
+# DGX Spark (GB10, 128GB unified), fronted by llama-swap — see
+# base/ai-services/spark-llamaswap.yaml for the full topology writeup.
+# Much larger (~80B-class) model than nemotron-3-nano:4b; added to give
+# operator-investigator a backend that doesn't loop/hit max_tokens on
+# casual chat turns. Reachable only from the control-plane node (the
+# gateway's nodeSelector was moved there in llm-gateway-application.yaml
+# for this reason).
+#
+# inFlight seed/max is 2 so a parent AgentTask can occupy one admission
+# slot while waiting for a spawned child AgentTask that uses the same
+# `coder` model. The backend is still a single Spark/llama-swap endpoint,
+# not a scalable pool; this avoids parent/child deadlock rather than
+# advertising broad parallel capacity.
+#
+# backendKind MUST be `localai`, not `openai` — `openai` maps to
+# OpenAIProvider, which is hardcoded requiresApiKey:true (it's built for
+# api.openai.com) and throws synchronously with no BACKEND_API_KEY_OPENAI
+# configured, surfacing as an instant (~6ms) "LLM backend returned HTTP
+# 502" with zero tokens — no request ever reaches Spark. `localai` maps
+# to LocalAIProvider (requiresApiKey:false), the correct shape for an
+# unauthenticated local OpenAI-compatible server like llama-swap.
+apiVersion: kagent.example.com/v1alpha1
+kind: ModelEndpoint
+metadata:
+  name: qwen-coder-spark
+  namespace: kagent-system
+  annotations:
+    argocd.argoproj.io/sync-wave: '7'
+spec:
+  model: 'coder'
+  backendKind: localai
+  backendUrl: 'http://spark-llamaswap.ai-services.svc.cluster.local:9090/v1'
+  inFlight:
+    seed: 2
+    max: 2
+  minSafe: 1
+---
+# ornith15 — current default (replaced `coder`, which 502/503'd, 2026-08-29).
+# Ornith-1.5-35B-A3B-NVFP4 (vLLM in the ornith-b12x-serve container),
+# verified generating direct at ~0.13s/200. Do NOT use plain `ornith`: its
+# backend (:8207 q8 GGUF via launch-ornith.sh) crashes on start, so requests
+# hang then fail. `backendKind: localai` because llama-swap is an
+# unauthenticated OpenAI-compatible server (the `openai` kind would 502).
+apiVersion: kagent.example.com/v1alpha1
+kind: ModelEndpoint
+metadata:
+  name: ornith15-spark
+  namespace: kagent-system
+  annotations:
+    argocd.argoproj.io/sync-wave: '7'
+spec:
+  model: 'ornith15'
+  backendKind: localai
+  backendUrl: 'http://spark-llamaswap.ai-services.svc.cluster.local:9090/v1'
+  # ornith15 serves 24 sequences (vLLM --max-num-seqs 24); the cap of 2 was
+  # July's parent-child admission for a different model. At 2, the third
+  # concurrent concierge turn got "429 at capacity" from this gateway while
+  # the spark sat at 0 in flight (2026-09-11 17:45Z). 8 leaves room for the
+  # judge and graphiti, which call the spark directly.
+  inFlight:
+    seed: 4
+    max: 8
+  minSafe: 2
+---
+# gemma — Gemma 4 12B multimodal (vision) on the spark. Backs the
+# vision-default modelClass and bytebot's screenshot reasoning.
+# Requesting it swaps out the current big model (llama-swap `big` group
+# is one-at-a-time, lease-arbitrated) — expect a multi-minute cold load
+# and eviction of ornith15 until something requests ornith15 back.
+apiVersion: kagent.example.com/v1alpha1
+kind: ModelEndpoint
+metadata:
+  name: gemma-spark
+  namespace: kagent-system
+  annotations:
+    argocd.argoproj.io/sync-wave: '7'
+spec:
+  model: 'gemma'
+  backendKind: localai
+  backendUrl: 'http://spark-llamaswap.ai-services.svc.cluster.local:9090/v1'
+  inFlight:
+    seed: 2
+    max: 2
+  minSafe: 1
+---
+# DISARMED 2026-08-30 per "0 bill, no surprises" (paperclip lesson):
+# with no ModelEndpoint registered, any request for this model id gets a
+# loud 400 unknown_model from the gateway instead of a Cloudflare charge.
+# The rc-pilot / rc-spectrum agents that pin these ids fail fast if ever
+# invoked. Re-arm deliberately by uncommenting.
+# Cloudflare AI Gateway → workers-ai/@cf/meta/llama-4-scout-17b-16e-instruct
+# via the OpenAI-compatible multi-provider proxy path
+# (`/{account}/{gateway}/compat/chat/completions`). Unblocks the
+# rc-pilot delegation + artifact-producer scenarios that
+# nemotron-3-nano:4b cannot tool-call reliably. Also the natural
+# target for the substrate verifier's llmJudge path — bumping
+# `verifier.defaultModel` to this model in application.yaml is a
+# follow-up once the homelab is observed healthy on this endpoint.
+#
+# Endpoint shape: backendUrl is the gateway's `/compat` base; the
+# kagent gateway's OpenAICompatProvider appends `/chat/completions`
+# at request time. Trying `/workers-ai/v1` instead would lock
+# this endpoint to CF Workers AI models only — the `/compat` path
+# accepts `workers-ai/@cf/...`, `openai/...`, `anthropic/...`, etc.,
+# so a future ModelEndpoint targeting OpenAI / Anthropic via the
+# same CF gateway just reuses this URL.
+#
+# Model name shape: CF's compat endpoint REQUIRES a provider prefix
+# — verified against the live homelab gateway, bare `@cf/...` returns
+# `code:2008 — Invalid provider`. The correct form for Workers AI
+# models is `workers-ai/@cf/<author>/<model>`. CF echoes back the
+# stripped `@cf/...` form in the response body but expects the prefix
+# on the request.
+#
+# Capacity tuning: scout is hosted; the rate limit is per-token +
+# per-minute on the CF side, not concurrency. AIMD's `cleanWindowMs=60s`
+# means the cap grows by +1 only after a full minute of error-free
+# responses.
+#
+# History — `minSafe=9` was set when rc-pilot's 9-way fan-out kept
+# tripping AIMD's protective floor before retry-on-429 landed. That
+# disabled the substrate's conservative back-off entirely, exposing
+# co-tenant traffic on the same model to whatever burst rc-pilot
+# generated. Since v0.1.8-modelclass.0 (commit c74ab16) the agent-pod
+# retries 429s with exponential backoff + Retry-After honoring, so
+# AIMD can keep the protective floor at a conservative value without
+# starving rc-pilot bursts. Reverting to minSafe=2 — the substrate-
+# default conservative floor — now that retry shipped.
+# apiVersion: kagent.example.com/v1alpha1
+# kind: ModelEndpoint
+# metadata:
+#   name: workers-ai-llama-4-scout
+#   namespace: kagent-system
+#   annotations:
+#     argocd.argoproj.io/sync-wave: '7'
+# spec:
+#   model: 'workers-ai/@cf/meta/llama-4-scout-17b-16e-instruct'
+#   backendKind: cloudflare
+#   backendUrl: 'https://gateway.ai.cloudflare.com/v1/57ae9156c4adc0ef529ea9509f99057f/homelab/compat'
+#   inFlight:
+#     seed: 12
+#     max: 20
+#   minSafe: 2
+---
+# DISARMED 2026-08-30 per "0 bill, no surprises" (paperclip lesson):
+# with no ModelEndpoint registered, any request for this model id gets a
+# loud 400 unknown_model from the gateway instead of a Cloudflare charge.
+# The rc-pilot / rc-spectrum agents that pin these ids fail fast if ever
+# invoked. Re-arm deliberately by uncommenting.
+# Cloudflare AI Gateway → workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast
+# via the same OpenAI-compat multi-provider proxy path as the scout
+# endpoint above. Added for the v0.1.9-rc.1 rc-spectrum bundle which
+# pairs scout + 70B head-to-head (examples/rc-spectrum/40-model-
+# compare-scout.yaml + 41-model-compare-llama70.yaml). The 70B model
+# is the documented fallback in docs/V0.1-COMPARISON.md and
+# docs/HARNESS-LESSONS.md when scout's tool-call shape regresses;
+# rc-spectrum exercises it as a first-class peer rather than a
+# fallback so the substrate's "swap models with no Agent CR change"
+# claim has a real second observation point.
+#
+# Capacity: same per-token / per-minute rate-limit ceiling on the
+# CF side as scout (no concurrency cap separately). AIMD bounds
+# mirror scout's so the gateway has comparable in-flight headroom
+# when both models are in flight from the same fanout (50-multi-
+# step-fanout.yaml).
+# apiVersion: kagent.example.com/v1alpha1
+# kind: ModelEndpoint
+# metadata:
+#   name: workers-ai-llama-33-70b
+#   namespace: kagent-system
+#   annotations:
+#     argocd.argoproj.io/sync-wave: '7'
+# spec:
+#   model: 'workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast'
+#   backendKind: cloudflare
+#   backendUrl: 'https://gateway.ai.cloudflare.com/v1/57ae9156c4adc0ef529ea9509f99057f/homelab/compat'
+#   inFlight:
+#     seed: 12
+#     max: 20
+#   minSafe: 2---
+# Qwen3.6-35B-A3B on the Mac mini pair (split over Thunderbolt with llama.cpp
+# RPC; Mini-2 hosts llama-server on :8080, Mini-3 is its worker). Direct LAN
+# address like nemotron-jetson: ArgoCD excludes Endpoints objects, so a
+# selector-less Service cannot be expressed in git. Mini-2's IP is a Deco
+# DHCP lease (Bonjour name Mini-2); reserve it or update here when it drifts.
+# Not on any modelClass yet: this is the cheap tier for work that should not
+# queue behind ornith15 on the spark. inFlight.max 2 = llama-server --parallel 2.
+apiVersion: kagent.example.com/v1alpha1
+kind: ModelEndpoint
+metadata:
+  name: qwen36-minis
+  namespace: kagent-system
+  annotations:
+    argocd.argoproj.io/sync-wave: '7'
+spec:
+  model: 'qwen36-minis'
+  backendKind: localai
+  # Mini-2 (Wi-Fi, pinned manual 2026-09-11; it had drifted to .51 and this
+  # said .63). Half the model lives on Mini-3 over Thunderbolt RPC; Gemma on
+  # Mini-3 is parked so the pair fits in 2 x 16 GB.
+  backendUrl: 'http://10.0.0.51:8080/v1'
+  inFlight:
+    seed: 1
+    max: 2
+  minSafe: 1

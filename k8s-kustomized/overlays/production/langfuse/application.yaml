@@ -1,0 +1,204 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Chris Knuteson
+#
+# Langfuse — self-hosted LLM observability + prompt management.
+# Reference values: kagent/packages/operator/charts/values-references/
+# langfuse.yaml. Chart 1.5.28 + appVersion 3.171.0.
+#
+# Architecture: postgres (BYO via shared db) + clickhouse + valkey +
+# minio (all bundled via Bitnami sub-charts; the chart already
+# overrides image refs to bitnamilegacy so the August-2025 Bitnami
+# pricing change doesn't bite).
+#
+# Initial setup is manual: after the Application is Healthy, browse to
+# https://langfuse.example.com, sign up, create an organization +
+# project, mint a public/secret API key. Drop those keys into the
+# Secret kagent-system/kagent-llm-langfuse-creds; the operator
+# chart's `langfuse.{publicKey,secretKey}` values plumb them into
+# spawned agent-pods.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: langfuse
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: langfuse
+    app.kubernetes.io/part-of: local-ai-homelab
+  annotations:
+    argocd.argoproj.io/sync-wave: '5'
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/langfuse/langfuse-k8s
+    targetRevision: 'langfuse-1.5.28'
+    path: charts/langfuse
+    helm:
+      releaseName: langfuse
+      values: |
+        deployment:
+          web:
+            replicaCount: 1
+          worker:
+            replicaCount: 1
+
+        # Web env — Langfuse reads these at boot. NEXTAUTH_URL must
+        # match the public Ingress host so OAuth/session cookies
+        # work; SALT/ENCRYPTION_KEY/NEXTAUTH_SECRET come from the
+        # Secret created by db-bootstrap.yaml.
+        langfuse:
+          nextauth:
+            url: 'https://langfuse.example.com'
+            secret:
+              secretKeyRef:
+                name: langfuse-app-secrets
+                key: NEXTAUTH_SECRET
+          salt:
+            secretKeyRef:
+              name: langfuse-app-secrets
+              key: SALT
+          encryptionKey:
+            secretKeyRef:
+              name: langfuse-app-secrets
+              key: ENCRYPTION_KEY
+          # Telemetry pings to langfuse.com — disable for homelab.
+          telemetryEnabled: false
+          additionalEnv:
+            # Headless init requires stable IDs; names alone are ignored
+            # by Langfuse v3. Keep these aligned with the existing
+            # database rows and kagent's committed project keys.
+            - name: LANGFUSE_INIT_ORG_ID
+              value: 'cmoqhayxw0001zo07cshrcara'
+            - name: LANGFUSE_INIT_ORG_NAME
+              value: 'kagent-homelab'
+            - name: LANGFUSE_INIT_PROJECT_ID
+              value: 'cmoqhb7rl0006zo07z3xog3tk'
+            - name: LANGFUSE_INIT_PROJECT_NAME
+              value: 'kagent'
+            - name: LANGFUSE_INIT_PROJECT_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: langfuse-init-project-keys
+                  key: public
+            - name: LANGFUSE_INIT_PROJECT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: langfuse-init-project-keys
+                  key: secret
+            # Auto-provision future signups into the homelab project.
+            # Existing users are repaired by access-bootstrap.yaml.
+            - name: LANGFUSE_DEFAULT_ORG_ID
+              value: 'cmoqhayxw0001zo07cshrcara'
+            - name: LANGFUSE_DEFAULT_ORG_ROLE
+              value: 'OWNER'
+            - name: LANGFUSE_DEFAULT_PROJECT_ID
+              value: 'cmoqhb7rl0006zo07z3xog3tk'
+            - name: LANGFUSE_DEFAULT_PROJECT_ROLE
+              value: 'OWNER'
+
+        # External postgres — shared homelab pgvector instance.
+        # Chart constructs DATABASE_URL from these components +
+        # password from the existingSecret.
+        postgresql:
+          deploy: false
+          host: postgresql.database.svc.cluster.local
+          port: 5432
+          auth:
+            username: langfuse
+            database: langfuse
+            existingSecret: langfuse-pg-creds
+            secretKeys:
+              userPasswordKey: password
+
+        # Clickhouse + Valkey + MinIO — bundled via the chart's
+        # bitnamilegacy-overridden sub-charts. Single replicas;
+        # homelab-grade.
+        clickhouse:
+          deploy: true
+          shards: 1
+          replicaCount: 1
+          auth:
+            username: default
+            password: 'REDACTED'
+          zookeeper:
+            replicaCount: 1
+            persistence:
+              storageClass: local-path
+          persistence:
+            storageClass: local-path
+            size: 10Gi
+          global:
+            storageClass: local-path
+
+        redis:
+          deploy: true
+          architecture: standalone
+          auth:
+            password: 'REDACTED'
+          master:
+            persistence:
+              storageClass: local-path
+              size: 5Gi
+          primary:
+            persistence:
+              storageClass: local-path
+              size: 5Gi
+          global:
+            storageClass: local-path
+
+        s3:
+          deploy: true
+          mode: standalone
+          auth:
+            rootPassword: 'REDACTED'
+          persistence:
+            storageClass: local-path
+            size: 10Gi
+          global:
+            storageClass: local-path
+
+        # Service exposure — internal only; ingress is a separate
+        # Traefik IngressRoute (ingressroute.yaml) keyed at
+        # langfuse.example.com.
+        web:
+          service:
+            type: ClusterIP
+            port: 3000
+
+        ingress:
+          enabled: false
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: langfuse-system
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m
+  ignoreDifferences:
+    # The live Zookeeper StatefulSet was created before this overlay
+    # standardized storageClass to local-path. Kubernetes forbids
+    # mutating volumeClaimTemplates in-place, and Argo gets stuck trying
+    # to dry-run/apply only this immutable diff. Existing PVCs are
+    # healthy; ignore that field so Langfuse can converge without a
+    # destructive StatefulSet/PVC replacement.
+    - group: apps
+      kind: StatefulSet
+      name: langfuse-zookeeper
+      jsonPointers:
+        - /spec/volumeClaimTemplates

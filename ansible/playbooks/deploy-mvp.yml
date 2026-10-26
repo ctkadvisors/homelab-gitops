@@ -1,0 +1,264 @@
+---
+# MVP Deployment Playbook for Local AI Homelab
+# This playbook deploys the minimum viable product to get the cluster running
+
+- name: Pre-deployment validation
+  hosts: all
+  gather_facts: yes
+  become: no
+  tags: validation
+  
+  tasks:
+    - name: Test SSH connectivity
+      ping:
+      tags: connectivity
+    
+    - name: Check sudo access
+      command: sudo whoami
+      register: sudo_check
+      changed_when: false
+      tags: connectivity
+    
+    - name: Validate sudo access
+      assert:
+        that: sudo_check.stdout == "root"
+        fail_msg: "Sudo access not working on {{ inventory_hostname }}"
+      tags: connectivity
+    
+    - name: Display pre-deployment summary
+      debug:
+        msg:
+          - "=== Pre-deployment Validation ==="
+          - "Host: {{ inventory_hostname }}"
+          - "IP: {{ ansible_default_ipv4.address }}"
+          - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Architecture: {{ ansible_architecture }}"
+          - "Memory: {{ ansible_memtotal_mb }}MB"
+          - "Role: {{ 'Master' if inventory_hostname in groups['k3s_masters'] else 'Worker' }}"
+          - "GPU: {{ 'Yes' if inventory_hostname in groups['gpu_workers'] else 'No' }}"
+      tags: validation
+
+- name: Deploy base system configuration
+  hosts: all
+  become: yes
+  gather_facts: yes
+  tags: base
+  
+  pre_tasks:
+    - name: Display base deployment info
+      debug:
+        msg:
+          - "=== Deploying Base System Configuration ==="
+          - "Target: {{ inventory_hostname }}"
+          - "This will configure the base system and Docker"
+      tags: always
+
+  roles:
+    - role: base-system
+      tags: base-system
+    
+    - role: docker
+      tags: docker
+
+  post_tasks:
+    - name: Verify base system deployment
+      debug:
+        msg:
+          - "Base system configuration completed for {{ inventory_hostname }}"
+          - "Docker installed: {{ ansible_facts.services['docker.service'].state == 'running' }}"
+      tags: verification
+
+- name: Deploy K3s master
+  hosts: k3s_masters
+  become: yes
+  gather_facts: yes
+  tags: k3s-master
+  serial: 1  # Deploy masters one at a time
+  
+  pre_tasks:
+    - name: Display K3s master deployment info
+      debug:
+        msg:
+          - "=== Deploying K3s Master ==="
+          - "Master node: {{ inventory_hostname }}"
+          - "API server will be: https://{{ ansible_default_ipv4.address }}:6443"
+      tags: always
+
+  roles:
+    - role: k3s-master
+      tags: k3s-master
+
+  post_tasks:
+    - name: Wait for K3s master to be fully ready
+      uri:
+        url: "https://localhost:6443/healthz"
+        method: GET
+        validate_certs: no
+        status_code: 200
+      register: api_ready
+      until: api_ready.status == 200
+      retries: 30
+      delay: 10
+      tags: verification
+    
+    - name: Display master deployment status
+      debug:
+        msg:
+          - "K3s master deployed successfully on {{ inventory_hostname }}"
+          - "API server is ready at: https://{{ ansible_default_ipv4.address }}:6443"
+          - "Kubeconfig available at: ~/.kube/config"
+      tags: verification
+
+- name: Deploy Jetson optimization (GPU workers)
+  hosts: gpu_workers
+  become: yes
+  gather_facts: yes
+  tags: jetson
+  
+  pre_tasks:
+    - name: Display Jetson optimization info
+      debug:
+        msg:
+          - "=== Optimizing Jetson Performance ==="
+          - "GPU worker: {{ inventory_hostname }}"
+          - "This will optimize GPU performance before joining cluster"
+      tags: always
+
+  roles:
+    - role: jetson-optimization
+      tags: jetson-optimization
+
+  post_tasks:
+    - name: Verify GPU optimization
+      shell: nvidia-smi
+      register: gpu_check
+      failed_when: false
+      tags: verification
+    
+    - name: Display GPU status
+      debug:
+        msg:
+          - "Jetson optimization completed for {{ inventory_hostname }}"
+          - "GPU available: {{ 'Yes' if gpu_check.rc == 0 else 'No' }}"
+      tags: verification
+
+- name: Deploy K3s workers
+  hosts: k3s_workers
+  become: yes
+  gather_facts: yes
+  tags: k3s-worker
+  serial: 1  # Deploy workers one at a time
+  
+  pre_tasks:
+    - name: Display K3s worker deployment info
+      debug:
+        msg:
+          - "=== Deploying K3s Worker ==="
+          - "Worker node: {{ inventory_hostname }}"
+          - "Will join master at: {{ groups['k3s_masters'][0] }}"
+      tags: always
+    
+    - name: Wait for master to be available
+      wait_for:
+        host: "{{ groups['k3s_masters'][0] }}"
+        port: 6443
+        timeout: 300
+      tags: always
+
+  roles:
+    - role: k3s-worker
+      tags: k3s-worker
+
+  post_tasks:
+    - name: Verify worker joined cluster
+      shell: |
+        k3s kubectl get nodes {{ inventory_hostname }}
+      register: node_status
+      delegate_to: "{{ groups['k3s_masters'][0] }}"
+      retries: 10
+      delay: 10
+      until: "'Ready' in node_status.stdout"
+      tags: verification
+    
+    - name: Display worker deployment status
+      debug:
+        msg:
+          - "K3s worker deployed successfully on {{ inventory_hostname }}"
+          - "Node status: {{ node_status.stdout.split()[1] }}"
+      tags: verification
+
+- name: Final cluster validation
+  hosts: k3s_masters
+  become: yes
+  gather_facts: no
+  tags: validation
+  
+  tasks:
+    - name: Get cluster status
+      shell: k3s kubectl get nodes -o wide
+      register: cluster_nodes
+      tags: cluster-status
+    
+    - name: Get cluster info
+      shell: k3s kubectl cluster-info
+      register: cluster_info
+      tags: cluster-status
+    
+    - name: Check system pods
+      shell: k3s kubectl get pods -n kube-system
+      register: system_pods
+      tags: cluster-status
+    
+    - name: Display final cluster status
+      debug:
+        msg:
+          - "=== CLUSTER DEPLOYMENT COMPLETED ==="
+          - ""
+          - "Cluster Nodes:"
+          - "{{ cluster_nodes.stdout_lines }}"
+          - ""
+          - "Cluster Info:"
+          - "{{ cluster_info.stdout_lines }}"
+          - ""
+          - "System Pods:"
+          - "{{ system_pods.stdout_lines }}"
+          - ""
+          - "=== NEXT STEPS ==="
+          - "1. Copy kubeconfig: scp {{ ansible_user }}@{{ ansible_default_ipv4.address }}:~/.kube/config ~/.kube/config"
+          - "2. Test cluster: kubectl get nodes"
+          - "3. Deploy applications: kubectl apply -f ../k8s/"
+          - "4. Access services via .homelab domains"
+      tags: summary
+      run_once: true
+
+- name: Generate deployment report
+  hosts: localhost
+  gather_facts: no
+  become: no
+  tags: report
+  
+  tasks:
+    - name: Create deployment timestamp
+      set_fact:
+        deployment_timestamp: "{{ ansible_date_time.iso8601 }}"
+      tags: report
+    
+    - name: Display MVP deployment summary
+      debug:
+        msg:
+          - "=== LOCAL AI HOMELAB MVP DEPLOYMENT COMPLETE ==="
+          - ""
+          - "Deployment completed at: {{ deployment_timestamp }}"
+          - "Total nodes deployed: {{ groups['all'] | length }}"
+          - "Master nodes: {{ groups['k3s_masters'] | length }}"
+          - "Worker nodes: {{ groups['k3s_workers'] | length }}"
+          - "GPU workers: {{ groups['gpu_workers'] | length }}"
+          - ""
+          - "Cluster is ready for application deployment!"
+          - ""
+          - "To access your cluster:"
+          - "1. kubectl get nodes"
+          - "2. kubectl get pods -A"
+          - "3. Deploy your AI services"
+      tags: report
+      run_once: true

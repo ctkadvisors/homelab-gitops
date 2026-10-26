@@ -1,0 +1,226 @@
+---
+# Debian/Ubuntu specific variables for base-system role
+
+# Package management
+package_manager: apt
+package_update_command: "apt update"
+package_upgrade_command: "apt upgrade -y"
+
+# Essential packages for Debian/Ubuntu systems
+essential_packages:
+  - curl
+  - wget
+  - git
+  - vim
+  - htop
+  - tree
+  - unzip
+  - software-properties-common
+  - apt-transport-https
+  - ca-certificates
+  - gnupg
+  - lsb-release
+  - build-essential
+  - python3
+  - python3-pip
+  - python3-setuptools
+
+# System services
+system_services:
+  enabled:
+    - ssh
+    - systemd-timesyncd
+    - systemd-resolved
+  disabled:
+    - bluetooth
+    - cups
+    - avahi-daemon
+
+# Network configuration
+network_manager: systemd-networkd
+dns_resolver: systemd-resolved
+
+# Security packages
+security_packages:
+  - ufw
+  - fail2ban
+  - unattended-upgrades
+
+# Development packages
+development_packages:
+  - gcc
+  - g++
+  - make
+  - cmake
+  - pkg-config
+
+# Container runtime packages
+container_packages:
+  - docker.io
+  - docker-compose
+  - containerd
+
+# Monitoring packages
+monitoring_packages:
+  - sysstat
+  - iotop
+  - nethogs
+  - dstat
+
+# File system packages
+filesystem_packages:
+  - nfs-common
+  - cifs-utils
+  - fuse
+
+# Archive and compression packages
+archive_packages:
+  - tar
+  - gzip
+  - bzip2
+  - xz-utils
+  - zip
+  - unzip
+
+# Network utilities
+network_packages:
+  - net-tools
+  - iproute2
+  - iputils-ping
+  - traceroute
+  - nmap
+  - tcpdump
+  - netcat
+
+# Text processing utilities
+text_packages:
+  - jq
+  - yq
+  - sed
+  - awk
+  - grep
+
+# System information utilities
+sysinfo_packages:
+  - lshw
+  - dmidecode
+  - lscpu
+  - lsblk
+  - lsusb
+  - lspci
+
+# Performance tuning packages
+performance_packages:
+  - cpufrequtils
+  - irqbalance
+  - tuned
+
+# Backup and sync packages
+backup_packages:
+  - rsync
+  - rclone
+
+# Default directories to create
+default_directories:
+  - path: /opt
+    owner: root
+    group: root
+    mode: "0755"
+  - path: /etc/ansible
+    owner: root
+    group: root
+    mode: "0755"
+  - path: /var/log/ansible
+    owner: root
+    group: root
+    mode: "0755"
+
+# Default cron jobs
+default_cron_jobs:
+  - name: "Update package cache"
+    job: "apt update"
+    minute: "0"
+    hour: "6"
+    day: "*"
+    month: "*"
+    weekday: "*"
+    user: "root"
+
+# Log files to manage
+log_files:
+  - /var/log/syslog
+  - /var/log/auth.log
+  - /var/log/kern.log
+  - /var/log/dpkg.log
+  - /var/log/apt/history.log
+
+# Systemd services to configure
+systemd_services:
+  - name: ssh
+    enabled: true
+    state: started
+  - name: systemd-timesyncd
+    enabled: true
+    state: started
+  - name: systemd-resolved
+    enabled: true
+    state: started
+
+# UFW firewall rules
+default_firewall_rules:
+  - rule: allow
+    port: 22
+    proto: tcp
+    comment: "SSH access"
+  - rule: allow
+    port: 6443
+    proto: tcp
+    comment: "K3s API server"
+  - rule: allow
+    port: 10250
+    proto: tcp
+    comment: "Kubelet API"
+
+# Kernel modules to load
+kernel_modules:
+  - overlay
+  - br_netfilter
+  - ip_vs
+  - ip_vs_rr
+  - ip_vs_wrr
+  - ip_vs_sh
+
+# Sysctl parameters for Kubernetes
+kubernetes_sysctl:
+  net.bridge.bridge-nf-call-iptables: 1
+  net.bridge.bridge-nf-call-ip6tables: 1
+  net.ipv4.ip_forward: 1
+  net.ipv4.conf.all.forwarding: 1
+  net.ipv6.conf.all.forwarding: 1
+
+# Performance sysctl parameters
+performance_sysctl:
+  vm.swappiness: 1
+  vm.dirty_ratio: 80
+  vm.dirty_background_ratio: 5
+  vm.vfs_cache_pressure: 50
+  net.core.rmem_max: 134217728
+  net.core.wmem_max: 134217728
+  net.core.netdev_max_backlog: 5000
+  net.ipv4.tcp_congestion_control: bbr
+  net.ipv4.tcp_window_scaling: 1
+  fs.file-max: 2097152
+  fs.nr_open: 1048576
+
+# Security sysctl parameters
+security_sysctl:
+  net.ipv4.conf.all.send_redirects: 0
+  net.ipv4.conf.default.send_redirects: 0
+  net.ipv4.conf.all.accept_redirects: 0
+  net.ipv4.conf.default.accept_redirects: 0
+  net.ipv4.conf.all.secure_redirects: 0
+  net.ipv4.conf.default.secure_redirects: 0
+  net.ipv4.icmp_echo_ignore_broadcasts: 1
+  net.ipv4.icmp_ignore_bogus_error_responses: 1
+  net.ipv4.conf.all.log_martians: 1
+  net.ipv4.conf.default.log_martians: 1

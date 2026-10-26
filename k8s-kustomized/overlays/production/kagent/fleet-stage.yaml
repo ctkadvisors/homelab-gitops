@@ -1,0 +1,97 @@
+# fleet-stage — what a pipeline stage (mission / improve run) may see.
+# Chris, 2026-09-06: "if YOU could do it, what would YOU want to have access
+# to". Read everything, write through PRs. A repair mission on 2026-09-06
+# halted with "I cannot inspect the live cluster"; now it can: pods, logs,
+# events, jobs and deployments in the fleet's own namespaces, read-only.
+# Nothing here can create, patch or delete; state changes stay GitOps.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fleet-stage
+  namespace: kagent-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fleet-stage-view
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events", "services", "endpoints", "configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list"]
+---
+# Nodes are cluster-scoped: the arm64 node that ate the fleet was invisible
+# to anything namespace-bound.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fleet-stage-nodes
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fleet-stage-nodes
+subjects:
+  - { kind: ServiceAccount, name: fleet-stage, namespace: kagent-system }
+roleRef:
+  kind: ClusterRole
+  name: fleet-stage-nodes
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: fleet-stage-view
+  namespace: kagent-system
+subjects:
+  - { kind: ServiceAccount, name: fleet-stage, namespace: kagent-system }
+roleRef: { kind: ClusterRole, name: fleet-stage-view, apiGroup: rbac.authorization.k8s.io }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: fleet-stage-view
+  namespace: ai-services
+subjects:
+  - { kind: ServiceAccount, name: fleet-stage, namespace: kagent-system }
+roleRef: { kind: ClusterRole, name: fleet-stage-view, apiGroup: rbac.authorization.k8s.io }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: fleet-stage-view
+  namespace: database
+subjects:
+  - { kind: ServiceAccount, name: fleet-stage, namespace: kagent-system }
+roleRef: { kind: ClusterRole, name: fleet-stage-view, apiGroup: rbac.authorization.k8s.io }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: fleet-stage-view
+  namespace: monitoring
+subjects:
+  - { kind: ServiceAccount, name: fleet-stage, namespace: kagent-system }
+roleRef: { kind: ClusterRole, name: fleet-stage-view, apiGroup: rbac.authorization.k8s.io }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: fleet-stage-view
+  namespace: arc-runners
+subjects:
+  - { kind: ServiceAccount, name: fleet-stage, namespace: kagent-system }
+roleRef: { kind: ClusterRole, name: fleet-stage-view, apiGroup: rbac.authorization.k8s.io }

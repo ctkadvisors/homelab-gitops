@@ -1,0 +1,22 @@
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: long-timeout
+  namespace: ingress-system
+spec:
+  forwardAuth:
+    responseHeaders:
+      - "X-Forwarded-User"
+    trustForwardHeader: true
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: long-timeout
+  namespace: fission
+spec:
+  # Increase timeouts for long-running AI functions
+  retry:
+    attempts: 1
+  # Note: Traefik doesn't have direct timeout middleware
+  # Timeouts are configured at the service level

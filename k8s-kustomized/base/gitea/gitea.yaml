@@ -1,0 +1,292 @@
+# Gitea Git Hosting and Container Registry
+# Provides internal Git hosting and container registry for the homelab
+---
+
+# Gitea ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gitea-config
+  namespace: gitea
+  labels:
+    app.kubernetes.io/name: gitea
+    app.kubernetes.io/component: config
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+data:
+  app.ini: |
+    APP_NAME = Homelab Git
+    RUN_MODE = prod
+    RUN_USER = git
+
+    [repository]
+    ROOT = /data/git/repositories
+    SCRIPT_TYPE = bash
+    DEFAULT_BRANCH = main
+    DEFAULT_PRIVATE = false
+    ENABLE_PUSH_CREATE_USER = true
+    ENABLE_PUSH_CREATE_ORG = true
+
+    [repository.local]
+    LOCAL_COPY_PATH = /data/gitea/tmp/local-repo
+
+    [repository.upload]
+    TEMP_PATH = /data/gitea/uploads
+
+    [server]
+    APP_DATA_PATH = /data/gitea
+    DOMAIN = git.example.com
+    SSH_DOMAIN = git.example.com
+    HTTP_PORT = 3000
+    ROOT_URL = https://git.example.com/
+    DISABLE_SSH = false
+    SSH_PORT = 22
+    SSH_LISTEN_PORT = 2222
+    LFS_START_SERVER = true
+    LFS_CONTENT_PATH = /data/git/lfs
+    LFS_JWT_SECRET = REDACTED
+    OFFLINE_MODE = false
+
+    [database]
+    PATH = /data/gitea/gitea.db
+    DB_TYPE = postgres
+    HOST = postgresql.database.svc.cluster.local:5432
+    NAME = gitea
+    USER = gitea
+    PASSWD = REDACTED
+    LOG_SQL = false
+    CHARSET = utf8
+
+    [indexer]
+    ISSUE_INDEXER_PATH = /data/gitea/indexers/issues.bleve
+
+    [session]
+    PROVIDER_CONFIG = /data/gitea/sessions
+    PROVIDER = file
+
+    [picture]
+    AVATAR_UPLOAD_PATH = /data/gitea/avatars
+    REPOSITORY_AVATAR_UPLOAD_PATH = /data/gitea/repo-avatars
+
+    [attachment]
+    PATH = /data/gitea/attachments
+
+    [log]
+    MODE = console
+    LEVEL = info
+    ROOT_PATH = /data/gitea/log
+
+    [security]
+    INSTALL_LOCK = true
+    SECRET_KEY = REDACTED
+    REVERSE_PROXY_LIMIT = 1
+    REVERSE_PROXY_TRUSTED_PROXIES = *
+
+    [service]
+    DISABLE_REGISTRATION = false
+    ALLOW_ONLY_EXTERNAL_REGISTRATION = false
+    REQUIRE_SIGNIN_VIEW = false
+    REGISTER_EMAIL_CONFIRM = false
+    ENABLE_NOTIFY_MAIL = false
+    ENABLE_REVERSE_PROXY_AUTHENTICATION = false
+    ENABLE_REVERSE_PROXY_AUTO_REGISTRATION = false
+    ENABLE_CAPTCHA = false
+    DEFAULT_KEEP_EMAIL_PRIVATE = false
+    DEFAULT_ALLOW_CREATE_ORGANIZATION = true
+    DEFAULT_ENABLE_TIMETRACKING = true
+    NO_REPLY_ADDRESS = noreply.homelab.local
+
+    [webhook]
+    ALLOWED_HOST_LIST = *
+
+    [mailer]
+    ENABLED = false
+
+    [openid]
+    ENABLE_OPENID_SIGNIN = false
+    ENABLE_OPENID_SIGNUP = false
+
+    [oauth2_client]
+    REGISTER_EMAIL_CONFIRM = false
+    OPENID_CONNECT_SCOPES = email profile
+    ENABLE_AUTO_REGISTRATION = false
+
+    [packages]
+    ENABLED = true
+    CHUNKED_UPLOAD_PATH = /data/gitea/tmp/package-upload
+
+    [packages.container]
+    ENABLED = true
+
+    [actions]
+    ENABLED = false
+---
+
+# Gitea Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitea
+  namespace: gitea
+  labels:
+    app: gitea
+    app.kubernetes.io/name: gitea
+    app.kubernetes.io/component: server
+    app.kubernetes.io/part-of: homelab-apps
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gitea
+  template:
+    metadata:
+      labels:
+        app: gitea
+        app.kubernetes.io/name: gitea
+        app.kubernetes.io/component: server
+    spec:
+      nodeSelector:
+        node-type: control-plane # Deploy on EliteMini
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: gitea
+          image: gitea/gitea:1.22.3
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+            - name: ssh
+              containerPort: 2222
+              protocol: TCP
+          env:
+            - name: USER_UID
+              value: "1000"
+            - name: USER_GID
+              value: "1000"
+            - name: GITEA__database__DB_TYPE
+              value: "postgres"
+            - name: GITEA__database__HOST
+              valueFrom:
+                secretKeyRef:
+                  name: gitea-secrets
+                  key: DB_HOST
+            - name: GITEA__database__NAME
+              valueFrom:
+                secretKeyRef:
+                  name: gitea-secrets
+                  key: DB_NAME
+            - name: GITEA__database__USER
+              valueFrom:
+                secretKeyRef:
+                  name: gitea-secrets
+                  key: DB_USER
+            - name: GITEA__database__PASSWD
+              valueFrom:
+                secretKeyRef:
+                  name: gitea-secrets
+                  key: DB_PASSWORD
+            - name: GITEA__security__SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: gitea-secrets
+                  key: SECRET_KEY
+            - name: GITEA__security__INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: gitea-secrets
+                  key: INTERNAL_TOKEN
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /etc/gitea/conf/app.ini
+              subPath: app.ini
+              readOnly: true
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "200m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+          livenessProbe:
+            httpGet:
+              path: /api/healthz
+              port: 3000
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/healthz
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: gitea-data
+        - name: config
+          configMap:
+            name: gitea-config
+---
+
+# Gitea Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitea
+  namespace: gitea
+  labels:
+    app: gitea
+    app.kubernetes.io/name: gitea
+    app.kubernetes.io/component: server
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  selector:
+    app: gitea
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+      protocol: TCP
+    - name: ssh
+      port: 2222
+      targetPort: 2222
+      protocol: TCP
+  type: ClusterIP
+---
+
+# Gitea Traefik IngressRoute
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: gitea-ingress
+  namespace: gitea
+  labels:
+    app: gitea
+    app.kubernetes.io/name: gitea
+    app.kubernetes.io/component: ingress
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`git.homelab`) || Host(`git.example.com`)
+      kind: Rule
+      services:
+        - name: gitea
+          port: 3000
+  tls:
+    secretName: homelab-tls
